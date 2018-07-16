@@ -44,7 +44,7 @@
 -export([get_commands_spec/0, delete_old_sessions/1]).
 
 %% API (used by mod_push_keepalive).
--export([notify/3, notify/5, notify/7, is_incoming_chat_msg/1]).
+-export([notify/3, notify/5, notify/8, is_incoming_chat_msg/1]).
 
 %% For IQ callbacks
 -export([delete_session/3]).
@@ -371,8 +371,12 @@ mam_message(Pkt, _LUser, _LServer, _Peer, _Type, _Dir) ->
     Pkt.
 
 -spec offline_message(message()) -> message().
-offline_message(#message{meta = #{mam_archived := true}} = Pkt) ->
-    Pkt; % Push notification was triggered via MAM.
+% BC
+% Not getting MAM messages for now, so, disable this
+%offline_message(#message{meta = #{mam_archived := true}} = Pkt) ->
+%    Pkt; % Push notification was triggered via MAM.
+offline_message(#message{sub_els = [#ps_event{items = #ps_items{items = [#ps_item{sub_els = [#message{} = Pkt]}]}}]}) -> 
+	offline_message(Pkt);
 offline_message(#message{to = #jid{luser = LUser, lserver = LServer}} = Pkt) ->
     case lookup_sessions(LUser, LServer) of
 	{ok, [_|_] = Clients} ->
@@ -444,19 +448,23 @@ notify(LUser, LServer, Clients, Pkt, Dir) ->
 	      HandleResponse = fun(#iq{type = result}) ->
 				       ok;
 				  (#iq{type = error}) ->
-				       spawn(?MODULE, delete_session,
-					     [LUser, LServer, TS]);
+				  	   ok;
+				  	   % BC
+				  	   % do not delete session on unsuccessfull notification as for now
+				       %spawn(?MODULE, delete_session,
+					   %  [LUser, LServer, TS]);
 				  (timeout) ->
 				       ok % Hmm.
 			       end,
-	      notify(LServer, PushLJID, Node, XData, Pkt, Dir, HandleResponse)
+	      notify(LUser, LServer, PushLJID, Node, XData, Pkt, Dir, HandleResponse)
       end, Clients).
 
--spec notify(binary(), ljid(), binary(), xdata(),
+-spec notify(binary(), binary(), ljid(), binary(), xdata(),
 	     xmpp_element() | xmlel() | none, direction(),
 	     fun((iq() | timeout) -> any())) -> ok.
-notify(LServer, PushLJID, Node, XData, Pkt, Dir, HandleResponse) ->
-    From = jid:make(LServer),
+notify(LUser, LServer, PushLJID, Node, XData, Pkt, Dir, HandleResponse) ->
+	?DEBUG("push notify for packet:~n~s",[xmpp:pp(Pkt)]),
+    From = jid:make(LUser, LServer),
     Summary = make_summary(LServer, Pkt, Dir),
     Item = #ps_item{sub_els = [#push_notification{xdata = Summary}]},
     PubSub = #pubsub{publish = #ps_publish{node = Node, items = [Item]},
@@ -609,6 +617,7 @@ make_summary(Host, #message{from = From} = Pkt, recv) ->
 	{false, false} ->
 	    undefined;
 	{IncludeSender, IncludeBody} ->
+		?DEBUG("make_summary with body / sender", []),
 	    case get_body_text(Pkt) of
 		none ->
 		    undefined;

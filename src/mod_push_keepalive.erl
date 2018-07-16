@@ -234,7 +234,7 @@ wake_all(LServer) ->
 	{ok, Sessions} ->
 	    IgnoreResponse = fun(_) -> ok end,
 	    lists:foreach(fun({_, PushLJID, Node, XData}) ->
-				  mod_push:notify(LServer, PushLJID, Node,
+				  mod_push:notify(<<"">>, LServer, PushLJID, Node,
 						  XData, none, undefined,
 						  IgnoreResponse)
 			  end, Sessions);

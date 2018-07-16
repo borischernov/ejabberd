@@ -1790,6 +1790,7 @@ publish_item(Host, ServerHost, Node, Publisher, ItemId, Payload, PubOpts, Access
 	    PayloadSize = byte_size(term_to_binary(Payload)) - 2,
 	    PayloadMaxSize = get_option(Options, max_payload_size),
 	    PreconditionsMet = preconditions_met(PubOpts, Options),
+	    ?DEBUG("publish_item with Payload: ~n~s",[xmpp:pp(Payload)]),
 	    if not PublishFeature ->
 		    {error, extended_error(xmpp:err_feature_not_implemented(),
 					   err_unsupported(publish))};
@@ -2641,6 +2642,8 @@ payload_xmlelements(Payload) ->
 
 payload_xmlelements([], Count) -> Count;
 payload_xmlelements([#xmlel{} | Tail], Count) ->
+    payload_xmlelements(Tail, Count + 1);
+payload_xmlelements([#push_notification{} | Tail], Count) ->
     payload_xmlelements(Tail, Count + 1);
 payload_xmlelements([_ | Tail], Count) ->
     payload_xmlelements(Tail, Count).
