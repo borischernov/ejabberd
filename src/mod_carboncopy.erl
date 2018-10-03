@@ -222,7 +222,9 @@ send_copies(JID, To, Packet, Direction)->
 	{false, _} ->
 	    [ {jid:make({U, S, CCRes}), CC_Version}
 	     || {CCRes, CC_Version} <- list(U, S),
-		lists:member(CCRes, AvailRs), CCRes /= R ]
+	    % intentionally break mod_carbons so that user gets own messages back
+		lists:member(CCRes, AvailRs) ]
+	    %lists:member(CCRes, AvailRs), CCRes /= R ]
 	    %TargetJIDs = lists:delete(JID, [ jid:make({U, S, CCRes}) || CCRes <- list(U, S) ]),
     end,
 
