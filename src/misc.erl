@@ -28,7 +28,9 @@
 -module(misc).
 
 %% API
--export([tolower/1, term_to_base64/1, base64_to_term/1, ip_to_list/1,
+-export([add_delay_info/3, add_delay_info/4,
+	 unwrap_carbon/1, unwrap_mucsub_message/1, is_standalone_chat_state/1,
+	 tolower/1, term_to_base64/1, base64_to_term/1, ip_to_list/1,
 	 hex_to_bin/1, hex_to_base64/1, url_encode/1, expand_keyword/3,
 	 atom_to_binary/1, binary_to_atom/1, tuple_to_binary/1,
 	 l2i/1, i2l/1, i2l/2, expr_to_term/1, term_to_expr/1,
@@ -36,7 +38,7 @@
 	 compile_exprs/2, join_atoms/2, try_read_file/1, get_descr/2,
 	 css_dir/0, img_dir/0, js_dir/0, msgs_dir/0, sql_dir/0, lua_dir/0,
 	 read_css/1, read_img/1, read_js/1, read_lua/1, try_url/1,
-	 intersection/2, format_val/1]).
+	 intersection/2, format_val/1, cancel_timer/1]).
 
 %% Deprecated functions
 -export([decode_base64/1, encode_base64/1]).
@@ -44,11 +46,81 @@
 	     {encode_base64, 1}]).
 
 -include("logger.hrl").
+-include("xmpp.hrl").
 -include_lib("kernel/include/file.hrl").
 
 %%%===================================================================
 %%% API
 %%%===================================================================
+-spec add_delay_info(stanza(), jid(), erlang:timestamp()) -> stanza().
+add_delay_info(Stz, From, Time) ->
+    add_delay_info(Stz, From, Time, <<"">>).
+
+-spec add_delay_info(stanza(), jid(), erlang:timestamp(), binary()) -> stanza().
+add_delay_info(Stz, From, Time, Desc) ->
+    NewDelay = #delay{stamp = Time, from = From, desc = Desc},
+    case xmpp:get_subtag(Stz, #delay{stamp = {0,0,0}}) of
+	#delay{from = OldFrom} when is_record(OldFrom, jid) ->
+	    case jid:tolower(From) == jid:tolower(OldFrom) of
+		true ->
+		    Stz;
+		false ->
+		    xmpp:append_subtags(Stz, [NewDelay])
+	    end;
+	_ ->
+	    xmpp:append_subtags(Stz, [NewDelay])
+    end.
+
+-spec unwrap_carbon(stanza()) -> xmpp_element().
+unwrap_carbon(#message{} = Msg) ->
+    try
+	case xmpp:get_subtag(Msg, #carbons_sent{forwarded = #forwarded{}}) of
+	    #carbons_sent{forwarded = #forwarded{sub_els = [El]}} ->
+		xmpp:decode(El, ?NS_CLIENT, [ignore_els]);
+	    _ ->
+		case xmpp:get_subtag(Msg, #carbons_received{
+					      forwarded = #forwarded{}}) of
+		    #carbons_received{forwarded = #forwarded{sub_els = [El]}} ->
+			xmpp:decode(El, ?NS_CLIENT, [ignore_els]);
+		    _ ->
+			Msg
+		end
+	end
+    catch _:{xmpp_codec, _} ->
+	    Msg
+    end;
+unwrap_carbon(Stanza) -> Stanza.
+
+-spec unwrap_mucsub_message(xmpp_element()) -> message() | false.
+unwrap_mucsub_message(#message{} = OuterMsg) ->
+    case xmpp:get_subtag(OuterMsg, #ps_event{}) of
+	#ps_event{
+	    items = #ps_items{
+		node = Node,
+		items = [
+		    #ps_item{
+			sub_els = [#message{} = InnerMsg]} | _]}}
+	    when Node == ?NS_MUCSUB_NODES_MESSAGES;
+		 Node == ?NS_MUCSUB_NODES_SUBJECT ->
+	    InnerMsg;
+	_ ->
+	    false
+    end;
+unwrap_mucsub_message(_Packet) ->
+    false.
+
+-spec is_standalone_chat_state(stanza()) -> boolean().
+is_standalone_chat_state(Stanza) ->
+    case unwrap_carbon(Stanza) of
+	#message{body = [], subject = [], sub_els = Els} ->
+	    IgnoreNS = [?NS_CHATSTATES, ?NS_DELAY, ?NS_EVENT],
+	    Stripped = [El || El <- Els,
+			      not lists:member(xmpp:get_ns(El), IgnoreNS)],
+	    Stripped == [];
+	_ ->
+	    false
+    end.
+
 -spec tolower(binary()) -> binary().
 tolower(B) ->
     iolist_to_binary(tolower_s(binary_to_list(B))).
@@ -204,7 +276,7 @@ compile_exprs(Mod, Exprs) ->
 
 -spec join_atoms([atom()], binary()) -> binary().
 join_atoms(Atoms, Sep) ->
-    str:join([io_lib:format("~p", [A]) || A <- Atoms], Sep).
+    str:join([io_lib:format("~p", [A]) || A <- lists:sort(Atoms)], Sep).
 
 %% @doc Checks if the file is readable and converts its name to binary.
 %%      Fails with `badarg` otherwise. The function is intended for usage
@@ -297,16 +369,38 @@ intersection(L1, L2) ->
       end, L1).
 
 -spec format_val(any()) -> iodata().
+format_val({yaml, S}) when is_integer(S); is_binary(S); is_atom(S) ->
+    format_val(S);
+format_val({yaml, YAML}) ->
+    S = try fast_yaml:encode(YAML)
+	catch _:_ -> YAML
+	end,
+    format_val(S);
 format_val(I) when is_integer(I) ->
     integer_to_list(I);
-format_val(S) when is_binary(S) ->
-    <<$", S/binary, $">>;
 format_val(B) when is_atom(B) ->
     erlang:atom_to_binary(B, utf8);
-format_val(YAML) ->
-    try [io_lib:nl(), fast_yaml:encode(YAML)]
-    catch _:_ -> io_lib:format("~p", [YAML])
+format_val(Term) ->
+    S = try iolist_to_binary(Term)
+	catch _:_ -> list_to_binary(io_lib:format("~p", [Term]))
+	end,
+    case binary:match(S, <<"\n">>) of
+	nomatch -> S;
+	_ -> [io_lib:nl(), S]
     end.
+
+-spec cancel_timer(reference()) -> ok.
+cancel_timer(TRef) when is_reference(TRef) ->
+    case erlang:cancel_timer(TRef) of
+	false ->
+	    receive {timeout, TRef, _} -> ok
+	    after 0 -> ok
+	    end;
+	_ ->
+	    ok
+    end;
+cancel_timer(_) ->
+    ok.
 
 %%%===================================================================
 %%% Internal functions

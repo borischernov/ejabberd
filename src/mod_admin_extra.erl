@@ -40,7 +40,7 @@
 	 restart_module/2,
 
 	 % Sessions
-	 num_active_users/2, num_resources/2, resource_num/3,
+	 num_resources/2, resource_num/3,
 	 kick_session/4, status_num/2, status_num/1,
 	 status_list/2, status_list/1, connected_users_info/0,
 	 connected_users_vhost/1, set_presence/7,
@@ -165,16 +165,6 @@ get_commands_spec() ->
 				      " - 0: code reloaded, module restarted\n"
 				      " - 1: error: module not loaded\n"
 				      " - 2: code not reloaded, but module restarted"},
-     #ejabberd_commands{name = num_active_users, tags = [accounts, stats],
-			desc = "Get number of users active in the last days (only Mnesia)",
-			policy = admin,
-			module = ?MODULE, function = num_active_users,
-			args = [{host, binary}, {days, integer}],
-			args_example = [<<"myserver.com">>, 3],
-			args_desc = ["Name of host to check", "Number of days to calculate sum"],
-			result = {users, integer},
-			result_example = 123,
-			result_desc = "Number of users active on given server in last n days"},
      #ejabberd_commands{name = delete_old_users, tags = [accounts, purge],
 			desc = "Delete users that didn't log in last days, or that never logged",
 			longdesc = "To protect admin accounts, configure this for example:\n"
@@ -850,62 +840,6 @@ get_hash(AccountPass, Method) ->
           || X <- binary_to_list(
               crypto:hash(binary_to_atom(Method, latin1), AccountPass))]).
 
-num_active_users(Host, Days) ->
-    DB_Type = gen_mod:get_module_opt(Host, mod_last, db_type),
-    list_last_activity(Host, true, Days, DB_Type).
-
-%% Code based on ejabberd/src/web/ejabberd_web_admin.erl
-list_last_activity(Host, Integral, Days, mnesia) ->
-    TimeStamp = p1_time_compat:system_time(seconds),
-    TS = TimeStamp - Days * 86400,
-    case catch mnesia:dirty_select(
-		 last_activity, [{{last_activity, {'_', Host}, '$1', '_'},
-				  [{'>', '$1', TS}],
-				  [{'trunc', {'/',
-					      {'-', TimeStamp, '$1'},
-					      86400}}]}]) of
-							      {'EXIT', _Reason} ->
-		 [];
-	       Vals ->
-		 Hist = histogram(Vals, Integral),
-		 if
-		     Hist == [] ->
-			 0;
-		     true ->
-			 Left = Days - length(Hist),
-			 Tail = if
-				    Integral ->
-					lists:duplicate(Left, lists:last(Hist));
-				    true ->
-					lists:duplicate(Left, 0)
-				end,
-			 lists:nth(Days, Hist ++ Tail)
-		 end
-	 end;
-list_last_activity(_Host, _Integral, _Days, DB_Type) ->
-    throw({error, iolist_to_binary(io_lib:format("Unsupported backend: ~p",
-						 [DB_Type]))}).
-
-histogram(Values, Integral) ->
-    histogram(lists:sort(Values), Integral, 0, 0, []).
-histogram([H | T], Integral, Current, Count, Hist) when Current == H ->
-    histogram(T, Integral, Current, Count + 1, Hist);
-histogram([H | _] = Values, Integral, Current, Count, Hist) when Current < H ->
-    if
-	Integral ->
-	    histogram(Values, Integral, Current + 1, Count, [Count | Hist]);
-	true ->
-	    histogram(Values, Integral, Current + 1, 0, [Count | Hist])
-    end;
-histogram([], _Integral, _Current, Count, Hist) ->
-    if
-	Count > 0 ->
-	    lists:reverse([Count | Hist]);
-	true ->
-	    lists:reverse(Hist)
-    end.
-
-
 delete_old_users(Days) ->
     %% Get the list of registered users
     Users = ejabberd_auth:get_users(),
@@ -1069,6 +1003,13 @@ stringize(String) ->
     ejabberd_regexp:greplace(String, <<"\n">>, <<"\\n">>).
 
 get_presence(Pid) ->
+    try get_presence2(Pid) of
+	{_, _, _, _} = Res ->
+	    Res
+    catch
+	_:_ -> {<<"">>, <<"">>, <<"offline">>, <<"">>}
+    end.
+get_presence2(Pid) ->
     Pres = #presence{from = From} = ejabberd_c2s:get_presence(Pid),
     Show = case Pres of
 	       #presence{type = unavailable} -> <<"unavailable">>;
@@ -1211,8 +1152,7 @@ set_vcard_content(User, Server, Data, SomeContent) ->
 	 end,
     %% Build new vcard
     SubEl = {xmlel, <<"vCard">>, [{<<"xmlns">>,<<"vcard-temp">>}], A4},
-    mod_vcard:set_vcard(User, jid:nameprep(Server), SubEl),
-    ok.
+    mod_vcard:set_vcard(User, jid:nameprep(Server), SubEl).
 
 take_vcard_tel(TelType, [{xmlel, <<"TEL">>, _, SubEls}=OldEl | OldEls], NewEls, Taken) ->
     {Taken2, NewEls2} = case lists:keymember(TelType, 2, SubEls) of
@@ -1449,8 +1389,7 @@ private_set(Username, Host, ElementString) ->
 private_set2(Username, Host, Xml) ->
     NS = fxml:get_tag_attr_s(<<"xmlns">>, Xml),
     mod_private:set_data(jid:nodeprep(Username), jid:nameprep(Host),
-			 [{NS, Xml}]),
-    ok.
+			 [{NS, Xml}]).
 
 %%%
 %%% Shared Roster Groups
@@ -1509,12 +1448,16 @@ srg_user_del(User, Host, Group, GroupHost) ->
 send_message(Type, From, To, Subject, Body) ->
     FromJID = jid:decode(From),
     ToJID = jid:decode(To),
-    Packet = build_packet(Type, Subject, Body),
+    Packet = build_packet(Type, Subject, Body, FromJID, ToJID),
+    State1 = #{jid => FromJID},
+    ejabberd_hooks:run_fold(user_send_packet, FromJID#jid.lserver, {Packet, State1}, []),
     ejabberd_router:route(xmpp:set_from_to(Packet, FromJID, ToJID)).
 
-build_packet(Type, Subject, Body) ->
+build_packet(Type, Subject, Body, FromJID, ToJID) ->
     #message{type = misc:binary_to_atom(Type),
 	     body = xmpp:mk_text(Body),
+	     from = FromJID,
+	     to = ToJID,
 	     id = p1_rand:get_string(),
 	     subject = xmpp:mk_text(Subject)}.
 

@@ -193,7 +193,8 @@ process([Call], #request{method = 'POST', data = Data, ip = IPPort} = Req) ->
 	    ?DEBUG("Bad Request: ~p", [_Err]),
 	    badrequest_response(<<"Invalid JSON input">>);
 	  _:_Error ->
-            ?DEBUG("Bad Request: ~p ~p", [_Error, erlang:get_stacktrace()]),
+            St = erlang:get_stacktrace(),
+            ?DEBUG("Bad Request: ~p ~p", [_Error, St]),
             badrequest_response()
     end;
 process([Call], #request{method = 'GET', q = Data, ip = {IP, _}} = Req) ->
@@ -210,9 +211,9 @@ process([Call], #request{method = 'GET', q = Data, ip = {IP, _}} = Req) ->
         throw:{error, unknown_command} ->
             json_format({404, 44, <<"Command not found.">>});
         _:_Error ->
-
-        ?DEBUG("Bad Request: ~p ~p", [_Error, erlang:get_stacktrace()]),
-        badrequest_response()
+            St = erlang:get_stacktrace(),
+            ?DEBUG("Bad Request: ~p ~p", [_Error, St]),
+            badrequest_response()
     end;
 process([_Call], #request{method = 'OPTIONS', data = <<>>}) ->
     {200, ?OPTIONS_HEADER, []};
@@ -273,20 +274,8 @@ handle(Call, Auth, Args, Version) when is_atom(Call), is_list(Args) ->
     case ejabberd_commands:get_command_format(Call, Auth, Version) of
         {ArgsSpec, _} when is_list(ArgsSpec) ->
             Args2 = [{misc:binary_to_atom(Key), Value} || {Key, Value} <- Args],
-            Spec = lists:foldr(
-                    fun ({Key, binary}, Acc) ->
-                            [{Key, <<>>}|Acc];
-                        ({Key, string}, Acc) ->
-			    [{Key, ""}|Acc];
-                        ({Key, integer}, Acc) ->
-                            [{Key, 0}|Acc];
-                        ({Key, {list, _}}, Acc) ->
-                            [{Key, []}|Acc];
-                        ({Key, atom}, Acc) ->
-                            [{Key, undefined}|Acc]
-                    end, [], ArgsSpec),
 	    try
-          handle2(Call, Auth, match(Args2, Spec), Version)
+          handle2(Call, Auth, Args2, Version)
 	    catch throw:not_found ->
 		    {404, <<"not_found">>};
 		  throw:{not_found, Why} when is_atom(Why) ->
@@ -300,9 +289,9 @@ handle(Call, Auth, Args, Version) when is_atom(Call), is_list(Args) ->
 		  throw:{not_allowed, Msg} ->
 		    {401, iolist_to_binary(Msg)};
                   throw:{error, account_unprivileged} ->
-        {403, 31, <<"Command need to be run with admin privilege.">>};
-      throw:{error, access_rules_unauthorized} ->
-        {403, 32, <<"AccessRules: Account does not have the right to perform the operation.">>};
+		      {403, 31, <<"Command need to be run with admin privilege.">>};
+		throw:{error, access_rules_unauthorized} ->
+		    {403, 32, <<"AccessRules: Account does not have the right to perform the operation.">>};
 		  throw:{invalid_parameter, Msg} ->
 		    {400, iolist_to_binary(Msg)};
 		  throw:{error, Why} when is_atom(Why) ->
@@ -314,7 +303,8 @@ handle(Call, Auth, Args, Version) when is_atom(Call), is_list(Args) ->
 		  throw:Msg when is_list(Msg); is_binary(Msg) ->
 		    {400, iolist_to_binary(Msg)};
 		  _Error ->
-		    ?ERROR_MSG("REST API Error: ~p ~p", [_Error, erlang:get_stacktrace()]),
+                    St = erlang:get_stacktrace(),
+		    ?ERROR_MSG("REST API Error: ~p ~p", [_Error, St]),
 		    {500, <<"internal_error">>}
 	    end;
         {error, Msg} ->
@@ -429,9 +419,6 @@ process_unicode_codepoints(Str) ->
 %% internal helpers
 %% ----------------
 
-match(Args, Spec) ->
-    [{Key, proplists:get_value(Key, Args, Default)} || {Key, Default} <- Spec].
-
 format_command_result(Cmd, Auth, Result, Version) ->
     {_, ResultFormat} = ejabberd_commands:get_command_format(Cmd, Auth, Version),
     case {ResultFormat, Result} of
@@ -502,6 +489,8 @@ format_result(404, {_Name, _}) ->
 
 format_error_result(conflict, Code, Msg) ->
     {409, Code, iolist_to_binary(Msg)};
+format_error_result(not_exists, Code, Msg) ->
+    {404, Code, iolist_to_binary(Msg)};
 format_error_result(_ErrorAtom, Code, Msg) ->
     {500, Code, iolist_to_binary(Msg)}.
 
