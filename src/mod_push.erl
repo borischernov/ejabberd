@@ -375,7 +375,9 @@ mam_message(Pkt, _LUser, _LServer, _Peer, _Type, _Dir) ->
 % Not getting MAM messages for now, so, disable this
 %offline_message(#message{meta = #{mam_archived := true}} = Pkt) ->
 %    Pkt; % Push notification was triggered via MAM.
-offline_message(#message{sub_els = [#ps_event{items = #ps_items{items = [#ps_item{sub_els = [#message{} = Pkt]}]}}]}) -> 
+
+% TODO proper matching of message
+offline_message(#message{sub_els = [#mam_archived{}, #stanza_id{}, #ps_event{items = #ps_items{items = [#ps_item{sub_els = [#message{} = Pkt]}]}}]}) -> 
 	offline_message(Pkt);
 offline_message(#message{to = #jid{luser = LUser, lserver = LServer}} = Pkt) ->
     case lookup_sessions(LUser, LServer) of
