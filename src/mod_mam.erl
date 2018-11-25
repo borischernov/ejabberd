@@ -655,7 +655,11 @@ should_archive(#message{body = Body, subject = Subject,
 			_ ->
 			    case misc:unwrap_mucsub_message(Pkt) of
 				#message{type = groupchat} = Msg ->
-				    should_archive(Msg#message{type = chat}, LServer);
+                    false
+%				    should_archive(Msg#message{type = chat}, LServer);
+% BC
+% Do not archive wrapped MucSub groupchat messages as these should've been 
+% archived already as MUC messages (all our MUC rooms have MAM enabled).
 				#message{} = Msg ->
 				    should_archive(Msg, LServer);
 				_ ->
