@@ -383,7 +383,7 @@ offline_message(#message{to = #jid{luser = LUser, lserver = LServer}} = Pkt) ->
 		    notify(LUser, LServer, Clients, Pkt, recv);
 		_ ->
 		    ok
-	    end;
+	    end
 	end,
     Pkt.
 
