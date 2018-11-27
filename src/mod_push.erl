@@ -371,22 +371,20 @@ mam_message(Pkt, _LUser, _LServer, _Peer, _Type, _Dir) ->
     Pkt.
 
 -spec offline_message(message()) -> message().
-% BC
-% Not getting MAM messages for now, so, disable this
-%offline_message(#message{meta = #{mam_archived := true}} = Pkt) ->
-%    Pkt; % Push notification was triggered via MAM.
-
-% TODO proper matching of message
-offline_message(#message{sub_els = [#mam_archived{}, #stanza_id{}, #ps_event{items = #ps_items{items = [#ps_item{sub_els = [#message{} = Pkt]}]}}]}) -> 
-	offline_message(Pkt);
 offline_message(#message{to = #jid{luser = LUser, lserver = LServer}} = Pkt) ->
-    case lookup_sessions(LUser, LServer) of
-	{ok, [_|_] = Clients} ->
-	    ?DEBUG("Notifying ~s@~s of offline message", [LUser, LServer]),
-	    notify(LUser, LServer, Clients, Pkt, recv);
+	case misc:unwrap_mucsub_message(Pkt) of
+	#message{} = Msg ->
+	    ?DEBUG("Unwrapping mucsub for offline message", [LUser, LServer]),
+		offline_message(Msg);
 	_ ->
-	    ok
-    end,
+	    case lookup_sessions(LUser, LServer) of
+		{ok, [_|_] = Clients} ->
+		    ?DEBUG("Notifying ~s@~s of offline message", [LUser, LServer]),
+		    notify(LUser, LServer, Clients, Pkt, recv);
+		_ ->
+		    ok
+	    end;
+	end,
     Pkt.
 
 -spec c2s_session_pending(c2s_state()) -> c2s_state().
