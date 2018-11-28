@@ -374,7 +374,7 @@ mam_message(Pkt, _LUser, _LServer, _Peer, _Type, _Dir) ->
 offline_message(#message{to = #jid{luser = LUser, lserver = LServer}} = Pkt) ->
 	case misc:unwrap_mucsub_message(Pkt) of
 	#message{} = Msg ->
-	    ?DEBUG("Unwrapping mucsub for offline message"),
+	    ?DEBUG("Unwrapping mucsub for offline message", []),
 		offline_message(Msg);
 	_ ->
 	    case lookup_sessions(LUser, LServer) of
