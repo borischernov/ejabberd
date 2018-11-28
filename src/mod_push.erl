@@ -374,7 +374,7 @@ mam_message(Pkt, _LUser, _LServer, _Peer, _Type, _Dir) ->
 offline_message(#message{to = #jid{luser = LUser, lserver = LServer}} = Pkt) ->
 	case misc:unwrap_mucsub_message(Pkt) of
 	#message{} = Msg ->
-	    ?DEBUG("Unwrapping mucsub for offline message", [LUser, LServer]),
+	    ?DEBUG("Unwrapping mucsub for offline message"),
 		offline_message(Msg);
 	_ ->
 	    case lookup_sessions(LUser, LServer) of
@@ -677,13 +677,15 @@ get_body_text(#message{body = Body} = Msg) ->
 body_is_encrypted(#message{sub_els = SubEls}) ->
     lists:keyfind(<<"encrypted">>, #xmlel.name, SubEls) /= false.
 
--spec get_sender_nickname(message()) -> binary().              
+-spec get_sender_nickname(message()) -> binary().
 get_sender_nickname(Msg) ->
+	?DEBUG("in get_sender_nickname:~n~s",[xmpp:pp(Msg)]),
     case fxml:get_subtag(Msg, <<"sender">>) of                       
     #xmlel{} = Sender ->
-       fxml:get_tag_attr_s(<<"nickname">>, Sender);
+		?DEBUG("got sender tag:~n~s",[xmpp:pp(Sender)]),
+    	fxml:get_tag_attr_s(<<"nickname">>, Sender);
     _ ->                         
-       <<"">>            
+    	<<"">>            
     end.
 
 %%--------------------------------------------------------------------
