@@ -632,7 +632,8 @@ make_summary(Host, #message{from = From} = Pkt, recv) ->
 			      end,
 		    Fields2 = case IncludeSender of
 				  true ->
-				      [{'last-message-sender', From} | Fields1];
+				      [{'last-message-sender', From}, 
+				       {'last-message-sender-nickname', get_sender_nickname(Pkt)} | Fields1];
 				  false ->
 				      Fields1
 			      end,
@@ -675,6 +676,15 @@ get_body_text(#message{body = Body} = Msg) ->
 -spec body_is_encrypted(message()) -> boolean().
 body_is_encrypted(#message{sub_els = SubEls}) ->
     lists:keyfind(<<"encrypted">>, #xmlel.name, SubEls) /= false.
+
+-spec get_sender_nickname(message()) -> binary().
+get_sender_nickname(Msg) ->
+	case xmpp:get_subtag(Msg, #sender{}) of
+	#sender{nickname = Nickname} ->
+		Nickname;
+	_ ->
+		<<"">>
+	end.
 
 %%--------------------------------------------------------------------
 %% Caching.
