@@ -617,7 +617,6 @@ make_summary(Host, #message{from = From} = Pkt, recv) ->
 	{false, false} ->
 	    undefined;
 	{IncludeSender, IncludeBody} ->
-		?DEBUG("make_summary with body / sender", []),
 	    case get_body_text(Pkt) of
 		none ->
 		    undefined;
@@ -632,12 +631,22 @@ make_summary(Host, #message{from = From} = Pkt, recv) ->
 			      end,
 		    Fields2 = case IncludeSender of
 				  true ->
-				      [{'last-message-sender', From}, 
-				       {'last-message-sender-nickname', get_sender_nickname(Pkt)} | Fields1];
+				      [{'last-message-sender', From} | Fields1];
 				  false ->
 				      Fields1
 			      end,
-		    #xdata{type = submit, fields = push_summary:encode(Fields2)}
+			Fields = push_summary:encode(Fields2),
+		    AllFields = case IncludeSender of
+				  true ->
+				      Fields ++ [#xdata_field{
+				      	label = <<"The sender nickname of the last received message">>,
+				      	type = 'text-single',
+				      	var = <<"last-message-sender-nickname">>,
+				      	values = [get_sender_nickname(Pkt)]}];
+				  false ->
+				      Fields
+			      end,
+		    #xdata{type = submit, fields = AllFields}
 	    end
     end;
 make_summary(_Host, _Pkt, _Dir) ->
