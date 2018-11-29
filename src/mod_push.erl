@@ -678,14 +678,12 @@ body_is_encrypted(#message{sub_els = SubEls}) ->
     lists:keyfind(<<"encrypted">>, #xmlel.name, SubEls) /= false.
 
 -spec get_sender_nickname(message()) -> binary().
-get_sender_nickname(Msg) ->
-	?DEBUG("in get_sender_nickname:~n~s",[xmpp:pp(Msg)]),
-    case fxml:get_subtag(Msg, <<"sender">>) of                       
+get_sender_nickname(#message{sub_els = SubEls}) ->
+    case lists:keyfind(<<"sender">>, #xmlel.name, SubEls) of
     #xmlel{} = Sender ->
-		?DEBUG("got sender tag:~n~s",[xmpp:pp(Sender)]),
     	fxml:get_tag_attr_s(<<"nickname">>, Sender);
     _ ->                         
-    	<<"">>            
+    	<<>>
     end.
 
 %%--------------------------------------------------------------------
