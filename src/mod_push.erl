@@ -353,20 +353,20 @@ c2s_stanza(State, _Pkt, _SendResult) ->
 
 -spec mam_message(message() | drop, binary(), binary(), jid(),
 		  chat | groupchat, recv | send) -> message().
-mam_message(#message{} = Pkt, LUser, LServer, _Peer, chat, Dir) ->
-    case lookup_sessions(LUser, LServer) of
-	{ok, [_|_] = Clients} ->
-	    case drop_online_sessions(LUser, LServer, Clients) of
-		[_|_] = Clients1 ->
-		    ?DEBUG("Notifying ~s@~s of MAM message", [LUser, LServer]),
-		    notify(LUser, LServer, Clients1, Pkt, Dir);
-		[] ->
-		    ok
-	    end;
-	_ ->
-	    ok
-    end,
-    Pkt;
+%mam_message(#message{} = Pkt, LUser, LServer, _Peer, chat, Dir) ->
+%    case lookup_sessions(LUser, LServer) of
+%	{ok, [_|_] = Clients} ->
+%	    case drop_online_sessions(LUser, LServer, Clients) of
+%		[_|_] = Clients1 ->
+%		    ?DEBUG("Notifying ~s@~s of MAM message", [LUser, LServer]),
+%		    notify(LUser, LServer, Clients1, Pkt, Dir);
+%		[] ->
+%		    ok
+%	    end;
+%	_ ->
+%	    ok
+%    end,
+%    Pkt;
 mam_message(Pkt, _LUser, _LServer, _Peer, _Type, _Dir) ->
     Pkt.
 
