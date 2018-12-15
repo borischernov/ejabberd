@@ -1456,6 +1456,14 @@ opt_type(default_ram_db) ->
     fun(T) when is_atom(T) -> T end;
 opt_type(loglevel) ->
     fun (P) when P >= 0, P =< 5 -> P end;
+
+%% Lager UDP changes
+opt_type(lager_udp_backend_host) ->
+    fun iolist_to_binary/1;
+opt_type(lager_udp_backend_port) ->
+    fun (P) when P >= 0, P =< 65535 -> P end;
+%%
+
 opt_type(queue_dir) ->
     fun iolist_to_binary/1;
 opt_type(queue_type) ->
@@ -1491,6 +1499,11 @@ opt_type(fqdn) ->
 opt_type(_) ->
     [hide_sensitive_log_data, hosts, language, max_fsm_queue,
      default_db, default_ram_db, queue_type, queue_dir, loglevel,
+
+%%
+     lager_udp_backend_host, lager_udp_backend_port,
+%%
+
      use_cache, cache_size, cache_missed, cache_life_time, fqdn,
      shared_key, node_start, validate_stream, negotiation_timeout].
 
