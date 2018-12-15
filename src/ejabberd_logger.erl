@@ -116,7 +116,7 @@ start(Level) ->
             %% Do not start lager, we rely on Elixir Logger
             do_start_for_logger(LLevel);
         _ ->
-            do_start(LLevel)
+            do_start_lager_udp(LLevel)
     end.
 
 do_start_for_logger(Level) ->
@@ -128,6 +128,38 @@ do_start_for_logger(Level) ->
     application:set_env(lager, crash_log, false),
     application:set_env(lager, handlers, [{elixir_logger_backend, [{level, Level}]}]),
     ejabberd:start_app(lager),
+    ok.
+
+do_start_lager_udp(Level) ->
+    application:load(sasl),
+    application:set_env(sasl, sasl_error_logger, false),
+    application:load(lager),
+    application:load(lager_udp_backend),
+    LogRateLimit = get_integer_env(log_rate_limit, 100),
+    application:set_env(lager, error_logger_hwm, LogRateLimit),
+    File = filename:dirname(ejabberd_config:get_ejabberd_config_path()) ++ "/lager_udp.conf",
+    { ok, UdpOption } = file:consult(File),
+    Host = proplists:get_value(lager_udp_backend_host, UdpOption, "127.0.0.1"),
+    Port = proplists:get_value(lager_udp_backend_port, UdpOption, 1234),
+    ConsoleLevel = case get_lager_version() >= "3.6.0" of
+		       true -> [{level, Level}];
+		       false -> Level
+		   end,
+    application:set_env(lager, handlers, [
+        {lager_console_backend, ConsoleLevel},
+        {lager_udp_backend, [
+            {name, "lager_udp_backend"},
+            {level, Level},
+            {host, Host},
+            {port, Port}
+        ]}
+    ]),
+    application:set_env(lager, crash_log, false),
+    ejabberd:start_app(lager),
+    lists:foreach(fun(Handler) ->
+			  lager:set_loghwm(Handler, LogRateLimit)
+		  end, gen_event:which_handlers(lager_event)),
+    error_logger:info_msg("Lager UDP started."),
     ok.
 
 %% Start lager
@@ -213,6 +245,8 @@ set(LogLevel) when is_integer(LogLevel) ->
                  (lager_console_backend = H) ->
                       lager:set_loglevel(H, LagerLogLevel);
                  (elixir_logger_backend = H) ->
+                      lager:set_loglevel(H, LagerLogLevel);
+                 (lager_udp_backend = H) ->
                       lager:set_loglevel(H, LagerLogLevel);
                  (_) ->
                       ok
