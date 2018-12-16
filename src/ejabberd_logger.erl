@@ -134,7 +134,7 @@ do_start_lager_udp(Level) ->
     application:load(sasl),
     application:set_env(sasl, sasl_error_logger, false),
     application:load(lager),
-    application:load(lager_rsyslog_backend),
+    application:load(lager_udp_backend),
     LogRateLimit = get_integer_env(log_rate_limit, 100),
     application:set_env(lager, error_logger_hwm, LogRateLimit),
     File = filename:dirname(ejabberd_config:get_ejabberd_config_path()) ++ "/lager_udp.conf",
@@ -147,20 +147,19 @@ do_start_lager_udp(Level) ->
 		   end,
     application:set_env(lager, handlers, [
         {lager_console_backend, ConsoleLevel},
-        {lager_rsyslog_backend, [                                       
-            {identity, "ejabberd"},                      
-            {facility, local2},                                       
-            {level, Level},                            
-            {host, Host},                                             
-            {port, Port}                                               
-        ]}                                                       
+        {lager_udp_backend, [
+            {name, "lager_udp_backend"},
+            {level, Level},
+            {host, Host},
+            {port, Port}
+        ]}
     ]),
     application:set_env(lager, crash_log, false),
     ejabberd:start_app(lager),
     lists:foreach(fun(Handler) ->
 			  lager:set_loghwm(Handler, LogRateLimit)
 		  end, gen_event:which_handlers(lager_event)),
-    error_logger:info_msg("Lager rsyslog backend started."),
+    error_logger:info_msg("Lager UDP started."),
     ok.
 
 %% Start lager
