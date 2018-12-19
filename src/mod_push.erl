@@ -159,7 +159,15 @@ get_commands_spec() ->
 			desc = "Remove push sessions older than DAYS",
 			module = ?MODULE, function = delete_old_sessions,
 			args = [{days, integer}],
-			result = {res, rescode}}].
+			result = {res, rescode}},
+	#ejabberd_commands{name = delete_push_sessions, tags = [purge],
+			desc = "Remove all push sessions for user",
+			module = ?MODULE, function = remove_user,
+			args = [{user, binary}, {server, binary}],
+			args_desc = ["Username", "Server"],
+			args_example = [<<"bob">>, <<"example.com">>],
+			result = {res, rescode}}
+	].
 
 -spec delete_old_sessions(non_neg_integer()) -> ok | any().
 delete_old_sessions(Days) ->
