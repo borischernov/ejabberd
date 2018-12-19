@@ -116,7 +116,7 @@ start(Level) ->
             %% Do not start lager, we rely on Elixir Logger
             do_start_for_logger(LLevel);
         _ ->
-            do_start_lager_udp(LLevel)
+            do_start_lager_syslog(LLevel)
     end.
 
 do_start_for_logger(Level) ->
@@ -130,36 +130,33 @@ do_start_for_logger(Level) ->
     ejabberd:start_app(lager),
     ok.
 
-do_start_lager_udp(Level) ->
+do_start_lager_syslog(Level) ->
     application:load(sasl),
     application:set_env(sasl, sasl_error_logger, false),
     application:load(lager),
-    application:load(lager_udp_backend),
+    application:load(lager_rsyslog),
     LogRateLimit = get_integer_env(log_rate_limit, 100),
     application:set_env(lager, error_logger_hwm, LogRateLimit),
-    File = filename:dirname(ejabberd_config:get_ejabberd_config_path()) ++ "/lager_udp.conf",
-    { ok, UdpOption } = file:consult(File),
-    Host = proplists:get_value(lager_udp_backend_host, UdpOption, "127.0.0.1"),
-    Port = proplists:get_value(lager_udp_backend_port, UdpOption, 1234),
+    File = filename:dirname(ejabberd_config:get_ejabberd_config_path()) ++ "/options_raw.conf",
+    { ok, RawOptions} = file:consult(File),
+    RsyslogOptions = case proplists:get_value(lager_rsyslog_options, RawOptions) of
+        undefined -> error(bad_lager_rsyslog_options);
+        Any -> Any
+    end,
     ConsoleLevel = case get_lager_version() >= "3.6.0" of
 		       true -> [{level, Level}];
 		       false -> Level
 		   end,
     application:set_env(lager, handlers, [
         {lager_console_backend, ConsoleLevel},
-        {lager_udp_backend, [
-            {name, "lager_udp_backend"},
-            {level, Level},
-            {host, Host},
-            {port, Port}
-        ]}
+        {lager_rsyslog_backend, RsyslogOptions }
     ]),
     application:set_env(lager, crash_log, false),
     ejabberd:start_app(lager),
     lists:foreach(fun(Handler) ->
 			  lager:set_loghwm(Handler, LogRateLimit)
 		  end, gen_event:which_handlers(lager_event)),
-    error_logger:info_msg("Lager UDP started."),
+    error_logger:info_msg("Lager syslog  backend started."),
     ok.
 
 %% Start lager

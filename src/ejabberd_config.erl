@@ -1456,14 +1456,6 @@ opt_type(default_ram_db) ->
     fun(T) when is_atom(T) -> T end;
 opt_type(loglevel) ->
     fun (P) when P >= 0, P =< 5 -> P end;
-
-%% Lager UDP changes
-opt_type(lager_udp_backend_host) ->
-    fun iolist_to_binary/1;
-opt_type(lager_udp_backend_port) ->
-    fun (P) when P >= 0, P =< 65535 -> P end;
-%%
-
 opt_type(queue_dir) ->
     fun iolist_to_binary/1;
 opt_type(queue_type) ->
