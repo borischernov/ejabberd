@@ -137,7 +137,7 @@ do_start_lager_syslog(Level) ->
     application:load(lager_rsyslog),
     LogRateLimit = get_integer_env(log_rate_limit, 100),
     application:set_env(lager, error_logger_hwm, LogRateLimit),
-    File = filename:dirname(ejabberd_config:get_ejabberd_config_path()) ++ "/options_raw.conf",
+    File = filename:dirname(ejabberd_config:get_ejabberd_config_path()) ++ "/logging.conf",
     { ok, RawOptions} = file:consult(File),
     RsyslogOptions = case proplists:get_value(lager_rsyslog_options, RawOptions) of
         undefined -> error(bad_lager_rsyslog_options);
