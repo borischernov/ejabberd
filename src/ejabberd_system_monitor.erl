@@ -68,14 +68,16 @@ start() ->
     application:set_env(os_mon, start_memsup, true),
     application:set_env(os_mon, start_disksup, false),
     ejabberd:start_app(os_mon),
-    set_oom_watermark().
+    set_oom_watermark(),
+    set_procmem_watermark().
 
 excluded_apps() ->
     [os_mon, mnesia, sasl, stdlib, kernel].
 
 -spec config_reloaded() -> ok.
 config_reloaded() ->
-    set_oom_watermark().
+    set_oom_watermark(),
+    set_procmem_watermark().
 
 %%%===================================================================
 %%% gen_event callbacks
@@ -311,6 +313,11 @@ set_oom_watermark() ->
     WaterMark = ejabberd_config:get_option(oom_watermark, 80),
     memsup:set_sysmem_high_watermark(WaterMark/100).
 
+-spec set_procmem_watermark() -> ok.
+set_procmem_watermark() ->
+    WaterMark = ejabberd_config:get_option(procmem_watermark, 5),
+    memsup:set_procmem_high_watermark(WaterMark/100).
+
 -spec maybe_restart_app(atom()) -> any().
 maybe_restart_app(lager) ->
     ejabberd_logger:restart();
@@ -321,6 +328,8 @@ opt_type(oom_killer) ->
     fun(B) when is_boolean(B) -> B end;
 opt_type(oom_watermark) ->
     fun(I) when is_integer(I), I>0, I<100 -> I end;
+opt_type(procmem_watermark) ->
+    fun(I) when is_integer(I), I>0, I<100 -> I end;
 opt_type(oom_queue) ->
     fun(I) when is_integer(I), I>0 -> I end;
-opt_type(_) -> [oom_killer, oom_watermark, oom_queue].
+opt_type(_) -> [oom_killer, oom_watermark, oom_queue, procmem_watermark].
