@@ -21,13 +21,19 @@
 -define(PRINT(Format, Args), io:format(Format, Args)).
 -compile([{parse_transform, lager_transform}]).
 
+-ifdef(DEBUG_ENABLED).
+-define(DEBUG(Format, Args),
+	lager:debug(Format, Args)).
+
+-define(INFO_MSG(Format, Args),
+	lager:info(Format, Args)).
+-else.
 -define(DEBUG(Format, Args),
 	true).
-%	lager:debug(Format, Args)).
 
 -define(INFO_MSG(Format, Args),
 	true).
-%	lager:info(Format, Args)).
+-endif.
 
 -define(WARNING_MSG(Format, Args),
 	lager:warning(Format, Args)).
