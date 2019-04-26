@@ -5,7 +5,7 @@
 %%% Created :  5 Jan 2003 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -100,6 +100,8 @@
 -callback read_all_messages(binary(), binary()) -> [#offline_msg{}].
 -callback remove_all_messages(binary(), binary()) -> {atomic, any()}.
 -callback count_messages(binary(), binary()) -> non_neg_integer().
+
+-optional_callbacks([remove_expired_messages/1, remove_old_messages/2]).
 
 depends(_Host, _Opts) ->
     [].
@@ -365,7 +367,6 @@ remove_msg_by_node(To, Seq) ->
 
 -spec need_to_store(binary(), message()) -> boolean().
 need_to_store(_LServer, #message{type = error}) -> false;
-need_to_store(_LServer, #message{type = groupchat}) -> false;
 need_to_store(LServer, #message{type = Type} = Packet) ->
     case xmpp:has_subtag(Packet, #offline{}) of
 	false ->
@@ -374,16 +375,25 @@ need_to_store(LServer, #message{type = Type} = Packet) ->
 		    true;
 		no_store ->
 		    false;
-		none when Type == headline ->
-		    false;
 		none ->
-		    case gen_mod:get_module_opt(
-			   LServer, ?MODULE, store_empty_body) of
-			true ->
+		    Store = case Type of
+				groupchat ->
+				    gen_mod:get_module_opt(
+				      LServer, ?MODULE, store_groupchat);
+				headline ->
+				    false;
+				_ ->
+				    true
+			    end,
+		    case {Store, gen_mod:get_module_opt(
+				   LServer, ?MODULE, store_empty_body)} of
+			{false, _} ->
+			    false;
+			{_, true} ->
 			    true;
-			false ->
+			{_, false} ->
 			    Packet#message.body /= [];
-			unless_chat_state ->
+			{_, unless_chat_state} ->
 			    not misc:is_standalone_chat_state(Packet)
 		    end
 	    end;
@@ -543,12 +553,18 @@ privacy_check_packet(#{lserver := LServer} = State, Pkt, Dir) ->
 remove_expired_messages(Server) ->
     LServer = jid:nameprep(Server),
     Mod = gen_mod:db_mod(LServer, ?MODULE),
-    Mod:remove_expired_messages(LServer).
+    case erlang:function_exported(Mod, remove_expired_messages, 1) of
+	true -> Mod:remove_expired_messages(LServer);
+	false -> erlang:error(not_implemented)
+    end.
 
 remove_old_messages(Days, Server) ->
     LServer = jid:nameprep(Server),
     Mod = gen_mod:db_mod(LServer, ?MODULE),
-    Mod:remove_old_messages(Days, LServer).
+    case erlang:function_exported(Mod, remove_old_messages, 2) of
+	true -> Mod:remove_old_messages(Days, LServer);
+	false -> erlang:error(not_implemented)
+    end.
 
 -spec remove_user(binary(), binary()) -> ok.
 remove_user(User, Server) ->
@@ -837,6 +853,8 @@ import(LServer, {sql, _}, DBType, <<"spool">>,
 mod_opt_type(access_max_user_messages) ->
     fun acl:shaper_rules_validator/1;
 mod_opt_type(db_type) -> fun(T) -> ejabberd_config:v_db(?MODULE, T) end;
+mod_opt_type(store_groupchat) ->
+    fun(V) when is_boolean(V) -> V end;
 mod_opt_type(store_empty_body) ->
     fun (V) when is_boolean(V) -> V;
         (unless_chat_state) -> unless_chat_state
@@ -845,4 +863,5 @@ mod_opt_type(store_empty_body) ->
 mod_options(Host) ->
     [{db_type, ejabberd_config:default_db(Host, ?MODULE)},
      {access_max_user_messages, max_user_offline_messages},
-     {store_empty_body, unless_chat_state}].
+     {store_empty_body, unless_chat_state},
+     {store_groupchat, false}].

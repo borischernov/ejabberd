@@ -5,7 +5,7 @@
 %%% Created : 14 Dec 2002 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -500,7 +500,8 @@ get_config_option_key(Name, Val) ->
 
 maps_to_lists(IMap) ->
     maps:fold(fun(Name, Map, Res) when Name == host_config orelse Name == append_host_config ->
-                      [{Name, [{Host, maps_to_lists(SMap)} || {Host,SMap} <- maps:values(Map)]} | Res];
+                      [{Name, [{jid:nameprep(Host), maps_to_lists(SMap)} ||
+				  {Host,SMap} <- maps:values(Map)]} | Res];
                  (Name, Map, Res) when is_map(Map) ->
                       [{Name, maps:values(Map)} | Res];
                  (Name, Val, Res) ->
@@ -513,8 +514,9 @@ merge_configs(Terms, ResMap) ->
                         New = lists:foldl(fun(SVal, OMap) ->
                                                   NVal = if Name == host_config orelse Name == append_host_config ->
                                                                  {Host, Opts} = SVal,
-                                                                 {_, SubMap} = maps:get(Host, OMap, {Host, #{}}),
-                                                                 {Host, merge_configs(Opts, SubMap)};
+								 HostNP = jid:nameprep(Host),
+                                                                 {_, SubMap} = maps:get(HostNP, OMap, {HostNP, #{}}),
+                                                                 {HostNP, merge_configs(Opts, SubMap)};
                                                             true ->
                                                                  SVal
                                                          end,
@@ -711,10 +713,16 @@ process_term(Term, State) ->
 
 process_host_term(Term, Host, State, Action) ->
     case Term of
-        {modules, Modules} when Action == set ->
-            set_option({modules, Host}, replace_modules(Modules), State);
-        {modules, Modules} when Action == append ->
-            append_option({modules, Host}, replace_modules(Modules), State);
+        {modules, Modules} ->
+	    Modules1 = try (gen_mod:opt_type(modules))(Modules) of
+			   _ -> replace_modules(Modules)
+		       catch _:_ -> Modules
+		       end,
+	    if Action == set ->
+		    set_option({modules, Host}, Modules1, State);
+	       Action == append ->
+		    append_option({modules, Host}, Modules1, State)
+	    end;
         {host, _} ->
             State;
         {hosts, _} ->
@@ -1447,7 +1455,7 @@ opt_type(hosts) ->
 	    [iolist_to_binary(H) || H <- L]
     end;
 opt_type(language) ->
-    fun iolist_to_binary/1;
+    fun xmpp_lang:check/1;
 opt_type(max_fsm_queue) ->
     fun (I) when is_integer(I), I > 0 -> I end;
 opt_type(default_db) ->

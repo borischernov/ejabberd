@@ -5,7 +5,7 @@
 %%% Created : 16 Oct 2014 by Christophe Romain <christophe.romain@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -84,6 +84,7 @@ request(Server, Method, Path, Params, Mime, Data) ->
     Opts = [{connect_timeout, ?CONNECT_TIMEOUT},
             {timeout, ?HTTP_TIMEOUT}],
     Hdrs = [{"connection", "keep-alive"},
+            {"Accept", "application/json"},
 	    {"User-Agent", "ejabberd"}]
 	   ++ custom_headers(Server),
     Req = if

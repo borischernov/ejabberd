@@ -5,7 +5,7 @@
 %%% Created : 30 Nov 2002 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -48,6 +48,7 @@
 -include("logger.hrl").
 -include_lib("stdlib/include/ms_transform.hrl").
 -include("xmpp.hrl").
+-include("ejabberd_stacktrace.hrl").
 
 -record(state, {}).
 
@@ -70,10 +71,9 @@ start_link() ->
 -spec route(stanza()) -> any().
 route(Packet) ->
     try do_route(Packet)
-    catch E:R ->
-            St = erlang:get_stacktrace(),
+    catch ?EX_RULE(E, R, St) ->
 	    ?ERROR_MSG("failed to route packet:~n~s~nReason = ~p",
-		       [xmpp:pp(Packet), {E, {R, St}}])
+		       [xmpp:pp(Packet), {E, {R, ?EX_STACK(St)}}])
     end.
 
 -spec route_iq(iq(), function()) -> ok.

@@ -5,7 +5,7 @@
 %%% Created : 17 Jul 2008 by Pablo Polvorin <pablo.polvorin@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -166,15 +166,10 @@ export_users([], _Server, _Fd) ->
 export_user(User, Server, Fd) ->
     Password = ejabberd_auth:get_password_s(User, Server),
     LServer = jid:nameprep(Server),
-    PasswordFormat = ejabberd_auth:password_format(LServer),
-    Pass = case Password of
-      {_,_,_,_} ->
-        case PasswordFormat of
-          scram -> format_scram_password(Password);          
-          _ -> <<"">>
-        end;
-      _ -> Password
-    end,
+    Pass = case ejabberd_auth:password_format(LServer) of
+	       scram -> format_scram_password(Password);
+	       _ -> Password
+	   end,
     Els = get_offline(User, Server) ++
         get_vcard(User, Server) ++
         get_privacy(User, Server) ++
@@ -186,7 +181,8 @@ export_user(User, Server, Fd) ->
                                 {<<"password">>, Pass}],
                        children = Els})).
 
-format_scram_password({StoredKey, ServerKey, Salt, IterationCount}) ->
+format_scram_password(#scram{storedkey = StoredKey, serverkey = ServerKey,
+			     salt = Salt, iterationcount = IterationCount}) ->
   StoredKeyB64 = base64:encode(StoredKey),
   ServerKeyB64 = base64:encode(ServerKey),
   SaltB64 = base64:encode(Salt),

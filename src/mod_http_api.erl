@@ -5,7 +5,7 @@
 %%% Created : 15 Sep 2014 by Christophe Romain <christophe.romain@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -80,6 +80,7 @@
 -include("xmpp.hrl").
 -include("logger.hrl").
 -include("ejabberd_http.hrl").
+-include("ejabberd_stacktrace.hrl").
 
 -define(DEFAULT_API_VERSION, 0).
 
@@ -136,39 +137,43 @@ depends(_Host, _Opts) ->
 %% basic auth
 %% ----------
 
-extract_auth(#request{auth = HTTPAuth, ip = {IP, _}}) ->
+extract_auth(#request{auth = HTTPAuth, ip = {IP, _}, opts = Opts}) ->
     Info = case HTTPAuth of
-            {SJID, Pass} ->
-                try jid:decode(SJID) of
+	       {SJID, Pass} ->
+		   try jid:decode(SJID) of
 		       #jid{luser = User, lserver = Server} ->
-                        case ejabberd_auth:check_password(User, <<"">>, Server, Pass) of
+			   case ejabberd_auth:check_password(User, <<"">>, Server, Pass) of
 			       true ->
 				   #{usr => {User, Server, <<"">>}, caller_server => Server};
 			       false ->
 				   {error, invalid_auth}
-                        end
-		catch _:{bad_jid, _} ->
-			{error, invalid_auth}
-                end;
-            {oauth, Token, _} ->
+			   end
+		   catch _:{bad_jid, _} ->
+		       {error, invalid_auth}
+		   end;
+	       {oauth, Token, _} ->
 		   case ejabberd_oauth:check_token(Token) of
 		       {ok, {U, S}, Scope} ->
 			   #{usr => {U, S, <<"">>}, oauth_scope => Scope, caller_server => S};
 		       {false, Reason} ->
 			   {error, Reason}
-                end;
-            _ ->
+		   end;
+	       invalid ->
+		   {error, invalid_auth};
+	       _ ->
 		   #{}
-        end,
+	   end,
     case Info of
 	Map when is_map(Map) ->
-	    Map#{caller_module => ?MODULE, ip => IP};
+	    Tag = proplists:get_value(tag, Opts, <<>>),
+	    Map#{caller_module => ?MODULE, ip => IP, tag => Tag};
 	_ ->
 	    ?DEBUG("Invalid auth data: ~p", [Info]),
 	    Info
     end;
-extract_auth(#request{ip = IP}) ->
-    #{ip => IP, caller_module => ?MODULE}.
+extract_auth(#request{ip = IP, opts = Opts}) ->
+    Tag = proplists:get_value(tag, Opts, <<>>),
+    #{ip => IP, caller_module => ?MODULE, tag => Tag}.
 
 %% ------------------
 %% command processing
@@ -192,9 +197,8 @@ process([Call], #request{method = 'POST', data = Data, ip = IPPort} = Req) ->
         _:{error,{_,invalid_json}} = _Err ->
 	    ?DEBUG("Bad Request: ~p", [_Err]),
 	    badrequest_response(<<"Invalid JSON input">>);
-	  _:_Error ->
-            St = erlang:get_stacktrace(),
-            ?DEBUG("Bad Request: ~p ~p", [_Error, St]),
+	?EX_RULE(_Class, _Error, Stack) ->
+            ?DEBUG("Bad Request: ~p ~p", [_Error, ?EX_STACK(Stack)]),
             badrequest_response()
     end;
 process([Call], #request{method = 'GET', q = Data, ip = {IP, _}} = Req) ->
@@ -210,9 +214,8 @@ process([Call], #request{method = 'GET', q = Data, ip = {IP, _}} = Req) ->
         %% TODO We need to refactor to remove redundant error return formatting
         throw:{error, unknown_command} ->
             json_format({404, 44, <<"Command not found.">>});
-        _:_Error ->
-            St = erlang:get_stacktrace(),
-            ?DEBUG("Bad Request: ~p ~p", [_Error, St]),
+        ?EX_RULE(_, _Error, Stack) ->
+            ?DEBUG("Bad Request: ~p ~p", [_Error, ?EX_STACK(Stack)]),
             badrequest_response()
     end;
 process([_Call], #request{method = 'OPTIONS', data = <<>>}) ->
@@ -302,9 +305,8 @@ handle(Call, Auth, Args, Version) when is_atom(Call), is_list(Args) ->
 		    {400, misc:atom_to_binary(Error)};
 		  throw:Msg when is_list(Msg); is_binary(Msg) ->
 		    {400, iolist_to_binary(Msg)};
-		  _Error ->
-                    St = erlang:get_stacktrace(),
-		    ?ERROR_MSG("REST API Error: ~p ~p", [_Error, St]),
+		  ?EX_RULE(Class, Error, Stack) ->
+		    ?ERROR_MSG("REST API Error: ~p:~p ~p", [Class, Error, ?EX_STACK(Stack)]),
 		    {500, <<"internal_error">>}
 	    end;
         {error, Msg} ->
@@ -325,15 +327,20 @@ handle2(Call, Auth, Args, Version) when is_atom(Call), is_list(Args) ->
 	    format_command_result(Call, Auth, Res, Version)
     end.
 
-get_elem_delete(A, L) ->
+get_elem_delete(A, L, F) ->
     case proplists:get_all_values(A, L) of
       [Value] -> {Value, proplists:delete(A, L)};
       [_, _ | _] ->
 	  %% Crash reporting the error
 	  exit({duplicated_attribute, A, L});
       [] ->
-	  %% Report the error and then force a crash
-	  exit({attribute_not_found, A, L})
+	  case F of
+	      {list, _} ->
+		  {[], L};
+	      _ ->
+		  %% Report the error and then force a crash
+		  exit({attribute_not_found, A, L})
+	  end
     end.
 
 format_args(Args, ArgsFormat) ->
@@ -342,7 +349,7 @@ format_args(Args, ArgsFormat) ->
 					  {Args1, Res}) ->
 					     {ArgValue, Args2} =
 						 get_elem_delete(ArgName,
-								 Args1),
+								 Args1, ArgFormat),
 					     Formatted = format_arg(ArgValue,
 								    ArgFormat),
 					     {Args2, Res ++ [Formatted]}
@@ -350,7 +357,10 @@ format_args(Args, ArgsFormat) ->
 				     {Args, []}, ArgsFormat),
     case ArgsRemaining of
       [] -> R;
-      L when is_list(L) -> exit({additional_unused_args, L})
+      L when is_list(L) ->
+	  throw({invalid_parameter,
+		 io_lib:format("Request have unknown arguments: ~w",
+			       [[N || {N, _} <- L]])})
     end.
 
 format_arg({Elements},
@@ -471,6 +481,9 @@ format_result(Code, {Name, restuple}) ->
 format_result(Els, {Name, {list, {_, {tuple, [{_, atom}, _]}} = Fmt}}) ->
     {misc:atom_to_binary(Name), {[format_result(El, Fmt) || El <- Els]}};
 
+format_result(Els, {Name, {list, {_, {tuple, [{name, string}, {value, _}]}} = Fmt}}) ->
+    {misc:atom_to_binary(Name), {[format_result(El, Fmt) || El <- Els]}};
+
 format_result(Els, {Name, {list, Def}}) ->
     {misc:atom_to_binary(Name), [element(2, format_result(El, Def)) || El <- Els]};
 
@@ -478,6 +491,11 @@ format_result(Tuple, {_Name, {tuple, [{_, atom}, ValFmt]}}) ->
     {Name2, Val} = Tuple,
     {_, Val2} = format_result(Val, ValFmt),
     {misc:atom_to_binary(Name2), Val2};
+
+format_result(Tuple, {_Name, {tuple, [{name, string}, {value, _} = ValFmt]}}) ->
+    {Name2, Val} = Tuple,
+    {_, Val2} = format_result(Val, ValFmt),
+    {iolist_to_binary(Name2), Val2};
 
 format_result(Tuple, {Name, {tuple, Def}}) ->
     Els = lists:zip(tuple_to_list(Tuple), Def),

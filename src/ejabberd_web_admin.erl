@@ -5,7 +5,7 @@
 %%% Created :  9 Apr 2004 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -254,6 +254,7 @@ get_auth_admin(Auth, HostHTTP, RPath, Method) ->
 	    catch _:{bad_jid, _} ->
 		    {unauthorized, <<"badformed-jid">>}
 	    end;
+      invalid -> {unauthorized, <<"no-auth-provided">>};
       undefined -> {unauthorized, <<"no-auth-provided">>}
     end.
 
@@ -305,7 +306,7 @@ make_xhtml(Els, Host, Node, Lang, JID) ->
 			     #xmlel{name = <<"script">>,
 				    attrs =
 					[{<<"src">>,
-					  <<Base/binary, "/additions.js">>},
+					  <<Base/binary, "additions.js">>},
 					 {<<"type">>, <<"text/javascript">>}],
 				    children = [?C(<<" ">>)]},
 			     #xmlel{name = <<"link">>,
@@ -337,7 +338,7 @@ make_xhtml(Els, Host, Node, Lang, JID) ->
 			   [?XAE(<<"div">>, [{<<"id">>, <<"copyright">>}],
 				 [?XE(<<"p">>,
 				  [?AC(<<"https://www.ejabberd.im/">>, <<"ejabberd">>),
-				   ?C(<<" (c) 2002-2018 ">>),
+				   ?C(<<" (c) 2002-2019 ">>),
 				   ?AC(<<"https://www.process-one.net/">>, <<"ProcessOne, leader in messaging and push solutions">>)]
                                  )])])])]}}.
 
@@ -2380,10 +2381,13 @@ node_modules_parse_query(Host, Node, Modules, Query) ->
 				{ok, Tokens, _} =
 				    erl_scan:string(binary_to_list(<<SOpts/binary, ".">>)),
 				{ok, Opts} = erl_parse:parse_term(Tokens),
+				NewMods = lists:keystore(Module, 1, ejabberd_config:get_option(modules), {Module, Opts}),
 				ejabberd_cluster:call(Node, gen_mod, stop_module,
 					 [Host, Module]),
+				ejabberd_cluster:call(Node, ejabberd_config, add_option,
+					 [modules, NewMods]),
 				ejabberd_cluster:call(Node, gen_mod, start_module,
-					 [Host, Module, Opts]),
+					 [Host, Module]),
 				throw(submitted);
 			    _ ->
 				case lists:keysearch(<<"stop", SModule/binary>>,

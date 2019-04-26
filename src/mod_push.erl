@@ -5,7 +5,7 @@
 %%% Created : 15 Jul 2017 by Holger Weiss <holger@zedat.fu-berlin.de>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2017-2018 ProcessOne
+%%% ejabberd, Copyright (C) 2017-2019 ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -34,7 +34,7 @@
 
 %% ejabberd_hooks callbacks.
 -export([disco_sm_features/5, c2s_session_pending/1, c2s_copy_session/2,
-	 c2s_handle_cast/2, c2s_stanza/3, mam_message/6, offline_message/1,
+	 c2s_handle_cast/2, c2s_stanza/3, mam_message/7, offline_message/1,
 	 remove_user/2]).
 
 %% gen_iq_handler callback.
@@ -360,22 +360,22 @@ c2s_stanza(State, _Pkt, _SendResult) ->
     State.
 
 -spec mam_message(message() | drop, binary(), binary(), jid(),
-		  chat | groupchat, recv | send) -> message().
-%mam_message(#message{} = Pkt, LUser, LServer, _Peer, chat, Dir) ->
-%    case lookup_sessions(LUser, LServer) of
-%	{ok, [_|_] = Clients} ->
-%	    case drop_online_sessions(LUser, LServer, Clients) of
-%		[_|_] = Clients1 ->
-%		    ?DEBUG("Notifying ~s@~s of MAM message", [LUser, LServer]),
-%		    notify(LUser, LServer, Clients1, Pkt, Dir);
-%		[] ->
-%		    ok
-%	    end;
-%	_ ->
-%	    ok
-%    end,
-%    Pkt;
-mam_message(Pkt, _LUser, _LServer, _Peer, _Type, _Dir) ->
+		  binary(), chat | groupchat, recv | send) -> message().
+%%mam_message(#message{} = Pkt, LUser, LServer, _Peer, _Nick, chat, Dir) ->
+%%    case lookup_sessions(LUser, LServer) of
+%%	{ok, [_|_] = Clients} ->
+%%	    case drop_online_sessions(LUser, LServer, Clients) of
+%%		[_|_] = Clients1 ->
+%%		    ?DEBUG("Notifying ~s@~s of MAM message", [LUser, LServer]),
+%%		    notify(LUser, LServer, Clients1, Pkt, Dir);
+%%		[] ->
+%%		    ok
+%%	    end;
+%%	_ ->
+%%	    ok
+%%    end,
+%%    Pkt;
+mam_message(Pkt, _LUser, _LServer, _Peer, _Nick, _Type, _Dir) ->
     Pkt.
 
 -spec offline_message(message()) -> message().
@@ -453,18 +453,35 @@ notify(#{jid := #jid{luser = LUser, lserver = LServer},
 notify(LUser, LServer, Clients, Pkt, Dir) ->
     lists:foreach(
       fun({TS, PushLJID, Node, XData}) ->
-	      HandleResponse = fun(#iq{type = result}) ->
-				       ok;
-				  (#iq{type = error}) ->
-				  	   ok;
-				  	   % BC
-				  	   % do not delete session on unsuccessfull notification as for now
-				       %spawn(?MODULE, delete_session,
-					   %  [LUser, LServer, TS]);
-				  (timeout) ->
-				       ok % Hmm.
-			       end,
-	      notify(LUser, LServer, PushLJID, Node, XData, Pkt, Dir, HandleResponse)
+	      HandleResponse =
+	          fun(#iq{type = result}) ->
+			  ?DEBUG("~s accepted notification for ~s@~s (~s)",
+				 [jid:encode(PushLJID), LUser, LServer, Node]);
+		     (#iq{type = error} = IQ) ->
+			  case inspect_error(IQ) of
+			      {wait, Reason} ->
+				  ?INFO_MSG("~s rejected notification for "
+					    "~s@~s (~s) temporarily: ~s",
+					    [jid:encode(PushLJID), LUser,
+					     LServer, Node, Reason]);
+			      {Type, Reason} ->
+		  	   % BC
+		  	   % do not delete session on unsuccessfull notification as for now
+				%  spawn(?MODULE, delete_session,
+				%	[LUser, LServer, TS]),
+					?WARNING_MSG("~s rejected notification for "
+					       "~s@~s (~s), but not disabling push: ~s "
+					       "(~s)",
+					       [jid:encode(PushLJID), LUser,
+						LServer, Node, Reason, Type])
+			  end;
+		     (timeout) ->
+			  ?DEBUG("Timeout sending notification for ~s@~s (~s) "
+				 "to ~s",
+				 [LUser, LServer, Node, jid:encode(PushLJID)]),
+			  ok % Hmm.
+		  end,
+	      notify(LServer, PushLJID, Node, XData, Pkt, Dir, HandleResponse)
       end, Clients).
 
 -spec notify(binary(), binary(), ljid(), binary(), xdata(),
@@ -701,6 +718,15 @@ get_sender_nickname(#message{sub_els = SubEls}) ->
     	fxml:get_tag_attr_s(<<"nickname">>, Sender);
     _ ->                         
     	<<>>
+    end.
+
+-spec inspect_error(iq()) -> {atom(), binary()}.
+inspect_error(IQ) ->
+    case xmpp:get_error(IQ) of
+	#stanza_error{type = Type} = Err ->
+	    {Type, xmpp:format_stanza_error(Err)};
+	undefined ->
+	    {undefined, <<"unrecognized error">>}
     end.
 
 %%--------------------------------------------------------------------

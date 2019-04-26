@@ -1,6 +1,6 @@
 %%%----------------------------------------------------------------------
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -21,8 +21,6 @@
 -define(MAX_USERS_DEFAULT, 200).
 
 -define(SETS, gb_sets).
-
--define(DICT, dict).
 
 -record(lqueue,
 {
@@ -102,20 +100,20 @@
     room                    = <<"">> :: binary(),
     host                    = <<"">> :: binary(),
     server_host             = <<"">> :: binary(),
-    access                  = {none,none,none,none} :: {atom(), atom(), atom(), atom()},
+    access                  = {none,none,none,none,none} :: {atom(), atom(), atom(), atom(), atom()},
     jid                     = #jid{} :: jid(),
     config                  = #config{} :: config(),
-    users                   = (?DICT):new() :: dict:dict(),
-    subscribers             = (?DICT):new() :: dict:dict(),
-    subscriber_nicks        = (?DICT):new() :: dict:dict(),
+    users                   = #{} :: map(),
+    subscribers             = #{} :: map(),
+    subscriber_nicks        = #{} :: map(),
     last_voice_request_time = treap:empty() :: treap:treap(),
-    robots                  = (?DICT):new() :: dict:dict(),
-    nicks                   = (?DICT):new() :: dict:dict(),
-    affiliations            = (?DICT):new() :: dict:dict(),
+    robots                  = #{} :: map(),
+    nicks                   = #{} :: map(),
+    affiliations            = #{} :: map(),
     history                 :: lqueue(),
     subject                 = [] :: [text()],
     subject_author          = <<"">> :: binary(),
-    just_created            = false :: boolean(),
+    just_created            = misc:now_to_usec(now()) :: true | integer(),
     activity                = treap:empty() :: treap:treap(),
     room_shaper             = none :: shaper:shaper(),
     room_queue              :: p1_queue:queue() | undefined

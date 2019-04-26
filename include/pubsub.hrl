@@ -1,6 +1,6 @@
 %%%----------------------------------------------------------------------
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -27,7 +27,7 @@
 
 %% this is currently a hard limit.
 %% Would be nice to have it configurable. 
--define(MAX_PAYLOAD_SIZE, 60000).
+-define(MAX_PAYLOAD_SIZE, 250000).
 
 %% -------------------------------
 %% Pubsub types

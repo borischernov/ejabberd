@@ -4,7 +4,7 @@
 %%% Created : 15 Apr 2016 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -30,7 +30,8 @@
 
 %% API
 -export([init/2, remove_user/2, remove_room/3, delete_old_messages/3,
-	 extended_fields/0, store/8, write_prefs/4, get_prefs/2, select/6, export/1, remove_from_archive/3]).
+	 extended_fields/0, store/8, write_prefs/4, get_prefs/2, select/6, export/1, remove_from_archive/3,
+	 is_empty_for_user/2, is_empty_for_room/3]).
 
 -include_lib("stdlib/include/ms_transform.hrl").
 -include("xmpp.hrl").
@@ -102,9 +103,18 @@ store(Pkt, LServer, {LUser, LHost}, Type, Peer, Nick, _Dir, TS) ->
 		   jid:remove_resource(Peer))),
     LPeer = jid:encode(
 	      jid:tolower(Peer)),
-    XML = fxml:element_to_binary(Pkt),
     Body = fxml:get_subtag_cdata(Pkt, <<"body">>),
     SType = misc:atom_to_binary(Type),
+    XML = case gen_mod:get_module_opt(LServer, mod_mam, compress_xml) of
+	      true ->
+		  J1 = case Type of
+			      chat -> jid:encode({LUser, LHost, <<>>});
+			      groupchat -> SUser
+			  end,
+		  xml_compress:encode(Pkt, J1, LPeer);
+	      _ ->
+		  fxml:element_to_binary(Pkt)
+	  end,
     case ejabberd_sql:sql_query(
            LServer,
            ?SQL_INSERT(
@@ -166,7 +176,7 @@ select(LServer, JidRequestor, #jid{luser = LUser} = JidArchive,
        MAMQuery, RSM, MsgType) ->
     User = case MsgType of
 	       chat -> LUser;
-	       {groupchat, _Role, _MUCState} -> jid:encode(JidArchive)
+	       _ -> jid:encode(JidArchive)
 	   end,
     {Query, CountQuery} = make_sql_query(User, LServer, MAMQuery, RSM),
     % TODO from XEP-0313 v0.2: "To conserve resources, a server MAY place a
@@ -192,8 +202,8 @@ select(LServer, JidRequestor, #jid{luser = LUser} = JidArchive,
 	    {lists:flatmap(
 	       fun([TS, XML, PeerBin, Kind, Nick]) ->
 		       case make_archive_el(
-			      TS, XML, PeerBin, Kind, Nick,
-			      MsgType, JidRequestor, JidArchive) of
+			   jid:encode(JidArchive), TS, XML, PeerBin, Kind, Nick,
+			   MsgType, JidRequestor, JidArchive) of
 			   {ok, El} ->
 			       [{TS, binary_to_integer(TS), El}];
 			   {error, _} ->
@@ -254,6 +264,21 @@ export(_Server) ->
          (_Host, _R) ->
               []
       end}].
+
+is_empty_for_user(LUser, LServer) ->
+    case ejabberd_sql:sql_query(
+	   LServer,
+	   ?SQL("select @(1)d from archive"
+		" where username=%(LUser)s and %(LServer)H limit 1")) of
+	{selected, [{1}]} ->
+	    false;
+	_ ->
+	    true
+    end.
+
+is_empty_for_room(LServer, LName, LHost) ->
+    LUser = jid:encode({LName, LHost, <<>>}),
+    is_empty_for_user(LUser, LServer).
 
 %%%===================================================================
 %%% Internal functions
@@ -399,13 +424,13 @@ get_max_direction_id(RSM) ->
 	    {undefined, undefined, <<>>}
     end.
 
--spec make_archive_el(binary(), binary(), binary(), binary(),
+-spec make_archive_el(binary(), binary(), binary(), binary(), binary(),
 		      binary(), _, jid(), jid()) ->
 			     {ok, xmpp_element()} | {error, invalid_jid |
 						     invalid_timestamp |
 						     invalid_xml}.
-make_archive_el(TS, XML, Peer, Kind, Nick, MsgType, JidRequestor, JidArchive) ->
-    case fxml_stream:parse_element(XML) of
+make_archive_el(User, TS, XML, Peer, Kind, Nick, MsgType, JidRequestor, JidArchive) ->
+    case xml_compress:decode(XML, User, Peer) of
 	#xmlel{} = El ->
 	    try binary_to_integer(TS) of
 		TSInt ->

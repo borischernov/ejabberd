@@ -3,7 +3,7 @@
 %%% Created :  2 Jun 2013 by Evgeniy Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2017   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -65,13 +65,13 @@ init_per_suite(Config) ->
 start_ejabberd(Config) ->
     case proplists:get_value(backends, Config) of
         all ->
-            ok = application:start(ejabberd, transient);
+            {ok, _} = application:ensure_all_started(ejabberd, transient);
         Backends when is_list(Backends) ->
             Hosts = lists:map(fun(Backend) -> Backend ++ ".localhost" end, Backends),
             application:load(ejabberd),
             AllHosts = Hosts ++ ["localhost"],    %% We always need localhost for the generic no_db tests
             application:set_env(ejabberd, hosts, AllHosts),
-            ok = application:start(ejabberd, transient)
+            {ok, _} = application:ensure_all_started(ejabberd, transient)
     end.
 
 end_per_suite(_Config) ->
@@ -401,7 +401,7 @@ db_tests(riak) ->
        presence_broadcast,
        last,
        roster_tests:single_cases(),
-       private,
+       %%private_tests:single_cases(),
        privacy_tests:single_cases(),
        vcard_tests:single_cases(),
        muc_tests:single_cases(),
@@ -424,7 +424,7 @@ db_tests(DB) when DB == mnesia; DB == redis ->
        presence_broadcast,
        last,
        roster_tests:single_cases(),
-       private,
+       private_tests:single_cases(),
        privacy_tests:single_cases(),
        vcard_tests:single_cases(),
        pubsub_tests:single_cases(),
@@ -455,7 +455,7 @@ db_tests(_) ->
        presence_broadcast,
        last,
        roster_tests:single_cases(),
-       private,
+       private_tests:single_cases(),
        privacy_tests:single_cases(),
        vcard_tests:single_cases(),
        pubsub_tests:single_cases(),
@@ -602,7 +602,7 @@ test_connect_bad_ns_stream(Config) ->
 test_connect_bad_lang(Config) ->
     Lang = iolist_to_binary(lists:duplicate(36, $x)),
     Config0 = init_stream(set_opt(lang, Lang, Config)),
-    ?recv1(#stream_error{reason = 'policy-violation'}),
+    ?recv1(#stream_error{reason = 'invalid-xml'}),
     ?recv1({xmlstreamend, <<"stream:stream">>}),
     close_socket(Config0).
 
@@ -976,33 +976,6 @@ disco(Config) ->
                             #iq{type = get, to = JID,
                                 sub_els = [#disco_info{node = Node}]})
       end, Items),
-    disconnect(Config).
-
-private(Config) ->
-    Conference = #bookmark_conference{name = <<"Some name">>,
-                                      autojoin = true,
-                                      jid = jid:make(
-                                              <<"some">>,
-                                              <<"some.conference.org">>,
-                                              <<>>)},
-    Storage = #bookmark_storage{conference = [Conference]},
-    StorageXMLOut = xmpp:encode(Storage),
-    WrongEl = #xmlel{name = <<"wrong">>},
-    #iq{type = error} =
-        send_recv(Config, #iq{type = get,
-			      sub_els = [#private{sub_els = [WrongEl]}]}),
-    #iq{type = result, sub_els = []} =
-        send_recv(
-          Config, #iq{type = set,
-                      sub_els = [#private{sub_els = [WrongEl, StorageXMLOut]}]}),
-    #iq{type = result,
-        sub_els = [#private{sub_els = [StorageXMLIn]}]} =
-        send_recv(
-          Config,
-          #iq{type = get,
-              sub_els = [#private{sub_els = [xmpp:encode(
-                                               #bookmark_storage{})]}]}),
-    Storage = xmpp:decode(StorageXMLIn),
     disconnect(Config).
 
 last(Config) ->

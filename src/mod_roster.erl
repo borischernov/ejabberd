@@ -5,7 +5,7 @@
 %%% Created : 11 Dec 2002 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -53,14 +53,11 @@
 	 depends/2]).
 
 -include("logger.hrl").
-
 -include("xmpp.hrl").
-
 -include("mod_roster.hrl").
-
 -include("ejabberd_http.hrl").
-
 -include("ejabberd_web_admin.hrl").
+-include("ejabberd_stacktrace.hrl").
 
 -define(ROSTER_CACHE, roster_cache).
 -define(ROSTER_ITEM_CACHE, roster_item_cache).
@@ -231,7 +228,7 @@ roster_version(LServer, LUser) ->
     case roster_version_on_db(LServer) of
       true ->
 	  case read_roster_version(LUser, LServer) of
-	    error -> not_found;
+	    error -> undefined;
 	    {ok, V} -> V
 	  end;
       false ->
@@ -320,10 +317,9 @@ process_iq_get(#iq{to = To, lang = Lang,
 		   #roster_query{items = Items,
 				 ver = Version}
 	   end)
-    catch E:R ->
-            St = erlang:get_stacktrace(),
+    catch ?EX_RULE(E, R, St) ->
 	    ?ERROR_MSG("failed to process roster get for ~s: ~p",
-		       [jid:encode(To), {E, {R, St}}]),
+		       [jid:encode(To), {E, {R, ?EX_STACK(St)}}]),
 	    Txt = <<"Roster module has failed">>,
 	    xmpp:make_error(IQ, xmpp:err_internal_server_error(Txt, Lang))
     end.
@@ -481,7 +477,8 @@ push_item(To, OldItem, NewItem) ->
     #jid{luser = LUser, lserver = LServer} = To,
     Ver = case roster_versioning_enabled(LServer) of
 	      true -> roster_version(LServer, LUser);
-	      false -> undefined
+	      false -> undefined;
+	      undefined -> undefined
 	  end,
     lists:foreach(
       fun(Resource) ->

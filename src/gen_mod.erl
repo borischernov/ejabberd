@@ -5,7 +5,7 @@
 %%% Created : 24 Jan 2003 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -58,6 +58,7 @@
 
 -include("logger.hrl").
 -include_lib("stdlib/include/ms_transform.hrl").
+-include("ejabberd_stacktrace.hrl").
 
 -record(ejabberd_module,
         {module_host = {undefined, <<"">>} :: {atom(), binary()},
@@ -217,8 +218,8 @@ start_module(Host, Module, Opts0, Order, NeedValidation) ->
 		    {ok, Pid} when is_pid(Pid) -> {ok, Pid};
 		    Err -> erlang:error({bad_return, Module, Err})
 		end
-	    catch Class:Reason ->
-		    StackTrace = erlang:get_stacktrace(),
+	    catch ?EX_RULE(Class, Reason, Stack) ->
+		    StackTrace = ?EX_STACK(Stack),
 		    ets:delete(ejabberd_modules, {Module, Host}),
 		    ErrorText = format_module_error(
 				  Module, start, 2,
@@ -282,8 +283,8 @@ reload_module(Host, Module, NewOpts, OldOpts, Order) ->
 		    {ok, Pid} when is_pid(Pid) -> {ok, Pid};
 		    Err -> erlang:error({bad_return, Module, Err})
 		end
-	    catch Class:Reason ->
-		    StackTrace = erlang:get_stacktrace(),
+	    catch ?EX_RULE(Class, Reason, Stack) ->
+		    StackTrace = ?EX_STACK(Stack),
 		    ErrorText = format_module_error(
                                   Module, reload, 3,
                                   NewOpts, Class, Reason,
@@ -936,8 +937,12 @@ opt_type(modules) ->
     fun(Mods) ->
 	    lists:map(
 	      fun({M, A}) when is_atom(M) ->
-		      true = is_opt_list(A),
-		      {M, A}
+		      case is_opt_list(A) of
+			  true -> {M, A};
+			  false ->
+			      ?ERROR_MSG("Malformed configuration format of module ~s", [M]),
+			      erlang:error(badarg)
+		      end
 	      end, Mods)
     end;
 opt_type(_) -> [modules].

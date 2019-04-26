@@ -4,7 +4,7 @@
 %%% Created :  8 May 2016 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -50,6 +50,7 @@
 -define(CALL_TIMEOUT, 60*1000). %% 60 seconds
 
 -include("logger.hrl").
+-include("ejabberd_stacktrace.hrl").
 
 -record(state, {connection :: pid() | undefined,
 		num :: pos_integer(),
@@ -106,9 +107,9 @@ multi(F) ->
 			{error, _} = Err -> Err;
 			Result -> get_result(Result)
 		    end
-	    catch E:R ->
+	    catch ?EX_RULE(E, R, St) ->
 		    erlang:erase(?TR_STACK),
-		    erlang:raise(E, R, erlang:get_stacktrace())
+		    erlang:raise(E, R, ?EX_STACK(St))
 	    end;
 	_ ->
 	    erlang:error(nested_transaction)

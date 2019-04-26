@@ -3,7 +3,7 @@ defmodule Ejabberd.Mixfile do
 
   def project do
     [app: :ejabberd,
-     version: "18.9.0",
+     version: "19.2.0",
      description: description(),
      elixir: "~> 1.4",
      elixirc_paths: ["lib"],
@@ -25,12 +25,12 @@ defmodule Ejabberd.Mixfile do
 
   def application do
     [mod: {:ejabberd_app, []},
-     applications: [:ssl, :os_mon],
+     applications: [:kernel, :stdlib, :sasl, :ssl],
      included_applications: [:lager, :mnesia, :inets, :p1_utils, :cache_tab,
                              :fast_tls, :stringprep, :fast_xml, :xmpp,
                              :stun, :fast_yaml, :esip, :jiffy, :p1_oauth2,
-                             :eimp, :base64url, :jose, :pkix]
-                         ++ cond_apps()]
+                             :eimp, :base64url, :jose, :pkix, :os_mon]
+     ++ cond_apps()]
   end
 
   defp if_function_exported(mod, fun, arity, okResult) do
@@ -42,10 +42,19 @@ defmodule Ejabberd.Mixfile do
     end
   end
 
+  defp if_version_above(ver, okResult) do
+    if :erlang.system_info(:otp_release) > ver do
+      okResult
+    else
+      []
+    end
+  end
+
   defp erlc_options do
     # Use our own includes + includes from all dependencies
     includes = ["include"] ++ deps_include(["fast_xml", "xmpp", "p1_utils"])
     [:debug_info, {:d, :ELIXIR_ENABLED}] ++ cond_options() ++ Enum.map(includes, fn(path) -> {:i, path} end) ++
+    if_version_above('20', [{:d, :DEPRECATED_GET_STACKTRACE}]) ++
     if_function_exported(:crypto, :strong_rand_bytes, 1, [{:d, :STRONG_RAND_BYTES}]) ++
     if_function_exported(:rand, :uniform, 1, [{:d, :RAND_UNIFORM}]) ++
     if_function_exported(:gb_sets, :iterator_from, 2, [{:d, :GB_SETS_ITERATOR_FROM}]) ++
@@ -58,22 +67,23 @@ defmodule Ejabberd.Mixfile do
   end
 
   defp deps do
-    [{:lager, "~> 3.4.0"},
+    [{:lager, "~> 3.6.0"},
      {:p1_utils, "~> 1.0"},
      {:fast_xml, "~> 1.1"},
-     {:xmpp, "~> 1.2"},
+     {:xmpp, "~> 1.3.0"},
      {:cache_tab, "~> 1.0"},
      {:stringprep, "~> 1.0"},
      {:fast_yaml, "~> 1.0"},
-     {:fast_tls, "~> 1.0"},
+     {:fast_tls, "~> 1.1"},
      {:stun, "~> 1.0"},
      {:esip, "~> 1.0"},
      {:p1_mysql, "~> 1.0"},
+     {:mqtree, "~> 1.0"},
      {:p1_pgsql, "~> 1.1"},
      {:jiffy, "~> 0.14.7"},
      {:p1_oauth2, "~> 0.6.1"},
-     {:distillery, "~> 1.0"},
-     {:pkix, github: "processone/pkix"},
+     {:distillery, "~> 2.0"},
+     {:pkix, "~> 1.0"},
      {:ex_doc, ">= 0.0.0", only: :dev},
      {:eimp, "~> 1.0"},
      {:base64url, "~> 0.0.1"},
@@ -94,11 +104,8 @@ defmodule Ejabberd.Mixfile do
                          {config(:riak), {:riakc, "~> 2.4"}},
                          {config(:redis), {:eredis, "~> 1.0"}},
                          {config(:zlib), {:ezlib, "~> 1.0"}},
-                         {config(:iconv), {:iconv, "~> 1.0"}},
                          {config(:pam), {:epam, "~> 1.0"}},
-                         {config(:tools), {:luerl, "~> 0.3.1"}},
-                         {config(:tools), {:meck, "~> 0.8.4"}},
-                         {config(:tools), {:moka, github: "processone/moka", tag: "1.0.5c"}}], do:
+                         {config(:tools), {:luerl, "~> 0.3.1"}}], do:
       dep
   end
 
@@ -107,8 +114,7 @@ defmodule Ejabberd.Mixfile do
                          {config(:mysql), :p1_mysql},
                          {config(:pgsql), :p1_pgsql},
                          {config(:sqlite), :sqlite3},
-                         {config(:zlib), :ezlib},
-                         {config(:iconv), :iconv}], do:
+                         {config(:zlib), :ezlib}], do:
       app
   end
 
@@ -126,7 +132,7 @@ defmodule Ejabberd.Mixfile do
   defp vars do
     case :file.consult("vars.config") do
       {:ok,config} -> config
-      _ -> [zlib: true, iconv: false]
+      _ -> [zlib: true]
     end
   end
 
