@@ -481,7 +481,7 @@ notify(LUser, LServer, Clients, Pkt, Dir) ->
 				 [LUser, LServer, Node, jid:encode(PushLJID)]),
 			  ok % Hmm.
 		  end,
-	      notify(LServer, PushLJID, Node, XData, Pkt, Dir, HandleResponse)
+	      notify(LUser, LServer, PushLJID, Node, XData, Pkt, Dir, HandleResponse)
       end, Clients).
 
 -spec notify(binary(), binary(), ljid(), binary(), xdata(),
