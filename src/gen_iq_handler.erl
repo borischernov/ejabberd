@@ -5,7 +5,7 @@
 %%% Created : 22 Jan 2003 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -40,6 +40,7 @@
 -include("logger.hrl").
 -include("xmpp.hrl").
 -include("translate.hrl").
+-include("ejabberd_stacktrace.hrl").
 
 -type component() :: ejabberd_sm | ejabberd_local.
 
@@ -113,10 +114,9 @@ process_iq(_Host, Module, Function, IQ) ->
 	    ejabberd_router:route(ResIQ);
 	ignore ->
 	    ok
-    catch E:R ->
-            St = erlang:get_stacktrace(),
+    catch ?EX_RULE(E, R, St) ->
 	    ?ERROR_MSG("failed to process iq:~n~s~nReason = ~p",
-		       [xmpp:pp(IQ), {E, {R, St}}]),
+		       [xmpp:pp(IQ), {E, {R, ?EX_STACK(St)}}]),
 	    Txt = <<"Module failed to handle the query">>,
 	    Err = xmpp:err_internal_server_error(Txt, IQ#iq.lang),
 	    ejabberd_router:route_error(IQ, Err)

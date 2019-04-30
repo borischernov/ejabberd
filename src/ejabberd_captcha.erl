@@ -5,7 +5,7 @@
 %%% Created : 26 Apr 2008 by Evgeniy Khramtsov <xramtsov@gmail.com>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -105,12 +105,13 @@ create_captcha(SID, From, To, Lang, Limiter, Args) ->
 			  "To unblock them, visit ~s">>, [JID, get_url(Id)]},
 	  Body = xmpp:mk_text(BodyString, Lang),
 	  OOB = #oob_x{url = get_url(Id)},
+	  Hint = #hint{type = 'no-store'},
 	  Tref = erlang:send_after(?CAPTCHA_LIFETIME, ?MODULE,
 				   {remove_id, Id}),
 	  ets:insert(captcha,
 		     #captcha{id = Id, pid = self(), key = Key, tref = Tref,
 			      args = Args}),
-	  {ok, Id, Body, [OOB, Captcha, Data]};
+	  {ok, Id, Body, [Hint, OOB, Captcha, Data]};
       Err -> Err
     end.
 
@@ -128,10 +129,10 @@ create_captcha_x(SID, To, Lang, Limiter, #xdata{fields = Fs} = X) ->
 					  "visit the web page.">>),
 	  Imageurl = get_url(<<Id/binary, "/image">>),
 	  NewFs = [mk_field(hidden, <<"FORM_TYPE">>, ?NS_CAPTCHA)|Fs] ++
-		[#xdata_field{type = fixed, values = [HelpTxt]},
+		[#xdata_field{type = fixed, var = <<"captcha-fallback-text">>, values = [HelpTxt]},
 		 #xdata_field{type = hidden, var = <<"captchahidden">>,
 			      values = [<<"workaround-for-psi">>]},
-		 #xdata_field{type = 'text-single', var = <<"url">>,
+		 #xdata_field{type = 'text-single', var = <<"captcha-fallback-url">>,
 			      label = translate:translate(
 					Lang, <<"CAPTCHA web page">>),
 			      values = [Imageurl]},

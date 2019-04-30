@@ -4,7 +4,7 @@
 %%% Created : 15 Apr 2016 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -90,8 +90,17 @@ remove_expired_messages(_LServer) ->
 remove_old_messages(Days, LServer) ->
     case ejabberd_sql:sql_query(
 	   LServer,
-	   ?SQL("DELETE FROM spool"
-                " WHERE created_at < NOW() - INTERVAL %(Days)d DAY")) of
+           fun(pgsql, _) ->
+                   ejabberd_sql:sql_query_t(
+                     ?SQL("DELETE FROM spool"
+                          " WHERE created_at <"
+                          " NOW() - INTERVAL '%(Days)d DAY'"));
+              (_, _) ->
+                   ejabberd_sql:sql_query_t(
+                     ?SQL("DELETE FROM spool"
+                          " WHERE created_at < NOW() - INTERVAL %(Days)d DAY"))
+              end)
+        of
 	{updated, N} ->
 	    ?INFO_MSG("~p message(s) deleted from offline spool", [N]);
 	_Error ->

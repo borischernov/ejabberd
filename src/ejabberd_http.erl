@@ -5,7 +5,7 @@
 %%% Created : 27 Feb 2004 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -69,7 +69,8 @@
 		default_host,
 		custom_headers,
 		trail = <<>>,
-		addr_re
+		addr_re,
+		sock_peer_name = none
 	       }).
 
 -define(XHTML_DOCTYPE,
@@ -143,6 +144,7 @@ init({SockMod, Socket}, Opts) ->
 		 true -> [{[], ejabberd_xmlrpc}];
 		 false -> []
 	     end,
+    SockPeer =  proplists:get_value(sock_peer_name, Opts, none),
     DefinedHandlers = proplists:get_value(request_handlers, Opts, []),
     RequestHandlers = DefinedHandlers ++ Captcha ++ Register ++
         Admin ++ Bind ++ XMLRPC,
@@ -159,6 +161,7 @@ init({SockMod, Socket}, Opts) ->
 		   custom_headers = CustomHeaders,
 		   options = Opts,
 		   request_handlers = RequestHandlers,
+		   sock_peer_name = SockPeer,
 		   addr_re = RE},
     try receive_headers(State) of
         V -> V
@@ -411,11 +414,11 @@ extract_path_query(#state{request_method = Method,
     when Method =:= 'GET' orelse
 	   Method =:= 'HEAD' orelse
 	     Method =:= 'DELETE' orelse Method =:= 'OPTIONS' ->
-    case catch url_decode_q_split(Path) of
-	{'EXIT', _} -> {State, false};
-	{NPath, Query} ->
-	    LPath = normalize_path([NPE
-				    || NPE <- str:tokens(path_decode(NPath), <<"/">>)]),
+    case catch url_decode_q_split_normalize(Path) of
+	{'EXIT', Error} ->
+	    ?DEBUG("Error decoding URL '~p': ~p", [Path, Error]),
+	    {State, false};
+	{LPath, Query} ->
 	    LQuery = case catch parse_urlencoded(Query) of
 			 {'EXIT', _Reason} -> [];
 			 LQ -> LQ
@@ -429,11 +432,11 @@ extract_path_query(#state{request_method = Method,
 			  sockmod = _SockMod,
 			  socket = _Socket} = State)
   when (Method =:= 'POST' orelse Method =:= 'PUT') andalso Len>0 ->
-    case catch url_decode_q_split(Path) of
-        {'EXIT', _} -> {State, false};
-        {NPath, _Query} ->
-            LPath = normalize_path(
-		      [NPE || NPE <- str:tokens(path_decode(NPath), <<"/">>)]),
+    case catch url_decode_q_split_normalize(Path) of
+	{'EXIT', Error} ->
+	    ?DEBUG("Error decoding URL '~p': ~p", [Path, Error]),
+	    {State, false};
+        {LPath, _Query} ->
 	    case Method of
 		'PUT' ->
 		    {State, {LPath, [], Trail}};
@@ -463,6 +466,7 @@ process_request(#state{request_method = Method,
 		       request_version = Version,
 		       sockmod = SockMod,
 		       socket = Socket,
+		       sock_peer_name = SockPeer,
 		       options = Options,
 		       request_host = Host,
 		       request_port = Port,
@@ -481,13 +485,17 @@ process_request(#state{request_method = Method,
 	{State2, false} ->
 	    {State2, make_bad_request(State)};
 	{State2, {LPath, LQuery, Data}} ->
-	    PeerName =
-		case SockMod of
-		    gen_tcp ->
-			inet:peername(Socket);
-		    _ ->
-			SockMod:peername(Socket)
-		end,
+	    PeerName = case SockPeer of
+			   none ->
+			       case SockMod of
+				   gen_tcp ->
+				       inet:peername(Socket);
+				   _ ->
+				       SockMod:peername(Socket)
+			       end;
+			   {_, Peer} ->
+			       {ok, Peer}
+		       end,
             IPHere = case PeerName of
                          {ok, V} -> V;
                          {error, _} = E -> throw(E)
@@ -724,6 +732,12 @@ file_format_error(Reason) ->
 	Text -> Text
     end.
 
+url_decode_q_split_normalize(Path) ->
+    {NPath, Query} = url_decode_q_split(Path),
+    LPath = normalize_path([NPE
+		    || NPE <- str:tokens(path_decode(NPath), <<"/">>)]),
+    {LPath, Query}.
+
 % Code below is taken (with some modifications) from the yaws webserver, which
 % is distributed under the following license:
 %
@@ -838,23 +852,23 @@ code_to_phrase(505) -> <<"HTTP Version Not Supported">>.
 
 -spec parse_auth(binary()) -> {binary(), binary()} | {oauth, binary(), []} | undefined.
 parse_auth(<<"Basic ", Auth64/binary>>) ->
-    Auth = try base64:decode(Auth64)
-	   catch _:badarg -> <<>>
-	   end,
-    %% Auth should be a string with the format: user@server:password
-    %% Note that password can contain additional characters '@' and ':'
-    case str:chr(Auth, $:) of
-        0 ->
-            undefined;
-        Pos ->
-            {User, <<$:, Pass/binary>>} = erlang:split_binary(Auth, Pos-1),
-            PassUtf8 = unicode:characters_to_binary(binary_to_list(Pass), utf8),
-            {User, PassUtf8}
+    try base64:decode(Auth64) of
+	Auth ->
+	    case binary:split(Auth, <<":">>) of
+		[User, Pass] ->
+		    PassUtf8 = unicode:characters_to_binary(Pass, utf8),
+		    {User, PassUtf8};
+		_ ->
+		    invalid
+	    end
+    catch _:_ ->
+	invalid
     end;
 parse_auth(<<"Bearer ", SToken/binary>>) ->
     Token = str:strip(SToken),
     {oauth, Token, []};
-parse_auth(<<_/binary>>) -> undefined.
+parse_auth(<<_/binary>>) ->
+    invalid.
 
 parse_urlencoded(S) ->
     parse_urlencoded(S, nokey, <<>>, key).
@@ -978,6 +992,8 @@ listen_opt_type(http_bind) ->
     fun(B) when is_boolean(B) -> B end;
 listen_opt_type(xmlrpc) ->
     fun(B) when is_boolean(B) -> B end;
+listen_opt_type(tag) ->
+    fun(B) when is_binary(B) -> B end;
 listen_opt_type(request_handlers) ->
     fun(Hs) ->
 	    Hs1 = lists:map(fun
@@ -1012,5 +1028,6 @@ listen_options() ->
      {http_bind, false},
      {xmlrpc, false},
      {request_handlers, []},
+     {tag, <<>>},
      {default_host, undefined},
      {custom_headers, []}].

@@ -5,7 +5,7 @@
 %%% Created : 10 Aug 2008 by Badlop <badlop@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -560,8 +560,10 @@ get_commands_spec() ->
 			desc = "Push template roster from file to a user",
 			longdesc = "The text file must contain an erlang term: a list "
 			    "of tuples with username, servername, group and nick. Example:\n"
-			    "[{\"user1\", \"localhost\", \"Workers\", \"User 1\"},\n"
-			    " {\"user2\", \"localhost\", \"Workers\", \"User 2\"}].",
+			    "[{<<\"user1\">>, <<\"localhost\">>, <<\"Workers\">>, <<\"User 1\">>},\n"
+			    " {<<\"user2\">>, <<\"localhost\">>, <<\"Workers\">>, <<\"User 2\">>}].\n"
+			    "When using UTF8 character encoding add /utf8 to certain string. Example:\n"
+			    "[{<<\"user2\">>, <<\"localhost\">>, <<\"Workers\"/utf8>>, <<\"User 2\"/utf8>>}].",
 			module = ?MODULE, function = push_roster,
 			args = [{file, binary}, {user, binary}, {host, binary}],
 			args_example = [<<"/home/ejabberd/roster.txt">>, <<"user1">>, <<"localhost">>],
@@ -985,11 +987,15 @@ get_status_list(Host, Status_required) ->
 	apply(Fstatus, [Status, Status_required])].
 
 connected_users_info() ->
-    lists:map(
+    lists:filtermap(
       fun({U, S, R}) ->
-	    Info = user_session_info(U, S, R),
-	    Jid = jid:encode(jid:make(U, S, R)),
-	    erlang:insert_element(1, Info, Jid)
+	    case user_session_info(U, S, R) of
+		offline ->
+		    false;
+		Info ->
+		    Jid = jid:encode(jid:make(U, S, R)),
+		    {true, erlang:insert_element(1, Info, Jid)}
+	    end
       end,
       ejabberd_sm:dirty_get_sessions_list()).
 
@@ -1052,23 +1058,31 @@ set_presence(User, Host, Resource, Type, Show, Status, Priority0) ->
     ejabberd_c2s:set_presence(Ref, Pres).
 
 user_sessions_info(User, Host) ->
-    [user_session_info(User, Host, Resource) ||
-    Resource <- ejabberd_sm:get_user_resources(User, Host)].
+    lists:filtermap(fun(Resource) ->
+			    case user_session_info(User, Host, Resource) of
+				offline -> false;
+				Info -> {true, Info}
+			    end
+		    end, ejabberd_sm:get_user_resources(User, Host)).
 
 user_session_info(User, Host, Resource) ->
     CurrentSec = calendar:datetime_to_gregorian_seconds({date(), time()}),
-    Info = ejabberd_sm:get_user_info(User, Host, Resource),
-    Now = proplists:get_value(ts, Info),
-    Pid = proplists:get_value(pid, Info),
-    {_U, _Resource, Status, StatusText} = get_presence(Pid),
-    Priority = proplists:get_value(priority, Info),
-    Conn = proplists:get_value(conn, Info),
-    {Ip, Port} = proplists:get_value(ip, Info),
-    IPS = inet_parse:ntoa(Ip),
-    NodeS = atom_to_list(node(Pid)),
-    Uptime = CurrentSec - calendar:datetime_to_gregorian_seconds(
-	    calendar:now_to_local_time(Now)),
-    {atom_to_list(Conn), IPS, Port, num_prio(Priority), NodeS, Uptime, Status, Resource, StatusText}.
+    case ejabberd_sm:get_user_info(User, Host, Resource) of
+	offline ->
+	    offline;
+	Info ->
+	    Now = proplists:get_value(ts, Info),
+	    Pid = proplists:get_value(pid, Info),
+	    {_U, _Resource, Status, StatusText} = get_presence(Pid),
+	    Priority = proplists:get_value(priority, Info),
+	    Conn = proplists:get_value(conn, Info),
+	    {Ip, Port} = proplists:get_value(ip, Info),
+	    IPS = inet_parse:ntoa(Ip),
+	    NodeS = atom_to_list(node(Pid)),
+	    Uptime = CurrentSec - calendar:datetime_to_gregorian_seconds(
+				    calendar:now_to_local_time(Now)),
+	    {atom_to_list(Conn), IPS, Port, num_prio(Priority), NodeS, Uptime, Status, Resource, StatusText}
+    end.
 
 
 %%%
@@ -1388,8 +1402,8 @@ private_set(Username, Host, ElementString) ->
 
 private_set2(Username, Host, Xml) ->
     NS = fxml:get_tag_attr_s(<<"xmlns">>, Xml),
-    mod_private:set_data(jid:nodeprep(Username), jid:nameprep(Host),
-			 [{NS, Xml}]).
+    JID = jid:make(Username, Host),
+    mod_private:set_data(JID, [{NS, Xml}]).
 
 %%%
 %%% Shared Roster Groups

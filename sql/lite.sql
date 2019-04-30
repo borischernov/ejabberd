@@ -1,5 +1,5 @@
 --
--- ejabberd, Copyright (C) 2002-2017   ProcessOne
+-- ejabberd, Copyright (C) 2002-2019   ProcessOne
 --
 -- This program is free software; you can redistribute it and/or
 -- modify it under the terms of the GNU General Public License as
@@ -357,16 +357,6 @@ CREATE TABLE bosh (
 
 CREATE UNIQUE INDEX i_bosh_sid ON bosh(sid);
 
-CREATE TABLE carboncopy (
-    username text NOT NULL,
-    resource text NOT NULL,
-    namespace text NOT NULL,
-    node text NOT NULL
-);
-
-CREATE UNIQUE INDEX i_carboncopy_ur ON carboncopy (username, resource);
-CREATE INDEX i_carboncopy_user ON carboncopy (username);
-
 CREATE TABLE proxy65 (
     sid text NOT NULL,
     pid_t text NOT NULL,
@@ -389,3 +379,56 @@ CREATE TABLE push_session (
 
 CREATE UNIQUE INDEX i_push_usn ON push_session (username, service, node);
 CREATE UNIQUE INDEX i_push_ut ON push_session (username, timestamp);
+
+CREATE TABLE mix_channel (
+    channel text NOT NULL,
+    service text NOT NULL,
+    username text NOT NULL,
+    domain text NOT NULL,
+    jid text NOT NULL,
+    hidden boolean NOT NULL,
+    hmac_key text NOT NULL,
+    created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX i_mix_channel ON mix_channel (channel, service);
+CREATE INDEX i_mix_channel_serv ON mix_channel (service);
+
+CREATE TABLE mix_participant (
+    channel text NOT NULL,
+    service text NOT NULL,
+    username text NOT NULL,
+    domain text NOT NULL,
+    jid text NOT NULL,
+    id text NOT NULL,
+    nick text NOT NULL,
+    created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX i_mix_participant ON mix_participant (channel, service, username, domain);
+CREATE INDEX i_mix_participant_chan_serv ON mix_participant (channel, service);
+
+CREATE TABLE mix_subscription (
+    channel text NOT NULL,
+    service text NOT NULL,
+    username text NOT NULL,
+    domain text NOT NULL,
+    node text NOT NULL,
+    jid text NOT NULL
+);
+
+CREATE UNIQUE INDEX i_mix_subscription ON mix_subscription (channel, service, username, domain, node);
+CREATE INDEX i_mix_subscription_chan_serv_ud ON mix_subscription (channel, service, username, domain);
+CREATE INDEX i_mix_subscription_chan_serv_node ON mix_subscription (channel, service, node);
+CREATE INDEX i_mix_subscription_chan_serv ON mix_subscription (channel, service);
+
+CREATE TABLE mix_pam (
+    username text NOT NULL,
+    channel text NOT NULL,
+    service text NOT NULL,
+    id text NOT NULL,
+    created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX i_mix_pam ON mix_pam (username, channel, service);
+CREATE INDEX i_mix_pam_us ON mix_pam (username);

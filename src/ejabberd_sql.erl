@@ -5,7 +5,7 @@
 %%% Created :  8 Dec 2004 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -37,12 +37,12 @@
 	 sql_query_t/1,
 	 sql_transaction/2,
 	 sql_bloc/2,
-         abort/1,
-         restart/1,
-         use_new_schema/0,
-         sql_query_to_iolist/1,
+	 abort/1,
+	 restart/1,
+	 use_new_schema/0,
+	 sql_query_to_iolist/1,
 	 escape/1,
-         standard_escape/1,
+	 standard_escape/1,
 	 escape_like/1,
 	 escape_like_arg/1,
 	 escape_like_arg_circumflex/1,
@@ -55,7 +55,8 @@
 	 freetds_config/0,
 	 odbcinst_config/0,
 	 init_mssql/1,
-	 keep_alive/2]).
+	 keep_alive/2,
+	 to_list/2]).
 
 %% gen_fsm callbacks
 -export([init/1, handle_event/3, handle_sync_event/4,
@@ -68,6 +69,7 @@
 
 -include("logger.hrl").
 -include("ejabberd_sql_pt.hrl").
+-include("ejabberd_stacktrace.hrl").
 
 -record(state,
 	{db_ref = self()                     :: pid(),
@@ -176,7 +178,7 @@ keep_alive(Host, PID) ->
 		    {sql_cmd, {sql_query, ?KEEPALIVE_QUERY},
 		     p1_time_compat:monotonic_time(milli_seconds)},
 		    query_timeout(Host)) of
-	{selected,[<<"1">>],[[<<"1">>]]} ->
+	{selected,_,[[<<"1">>]]} ->
 	    ok;
 	_Err ->
 	    ?ERROR_MSG("keep alive query failed, closing connection: ~p", [_Err]),
@@ -257,6 +259,10 @@ to_bool(<<"1">>) -> true;
 to_bool(true) -> true;
 to_bool(1) -> true;
 to_bool(_) -> false.
+
+to_list(EscapeFun, Val) ->
+    Escaped = lists:join(<<",">>, lists:map(EscapeFun, Val)),
+    [<<"(">>, Escaped, <<")">>].
 
 encode_term(Term) ->
     escape(list_to_binary(
@@ -511,24 +517,26 @@ outer_transaction(F, NRestarts, _Reason) ->
     end,
     sql_query_internal([<<"begin;">>]),
     put(?NESTING_KEY, PreviousNestingLevel + 1),
-    Result = (catch F()),
-    put(?NESTING_KEY, PreviousNestingLevel),
-    case Result of
-      {aborted, Reason} when NRestarts > 0 ->
-	  sql_query_internal([<<"rollback;">>]),
-	  outer_transaction(F, NRestarts - 1, Reason);
-      {aborted, Reason} when NRestarts =:= 0 ->
-	  ?ERROR_MSG("SQL transaction restarts exceeded~n** "
-		     "Restarts: ~p~n** Last abort reason: "
-		     "~p~n** Stacktrace: ~p~n** When State "
-		     "== ~p",
-		     [?MAX_TRANSACTION_RESTARTS, Reason,
-		      erlang:get_stacktrace(), get(?STATE_KEY)]),
-	  sql_query_internal([<<"rollback;">>]),
-	  {aborted, Reason};
-      {'EXIT', Reason} ->
-	  sql_query_internal([<<"rollback;">>]), {aborted, Reason};
-      Res -> sql_query_internal([<<"commit;">>]), {atomic, Res}
+    try F() of
+	Res ->
+	    sql_query_internal([<<"commit;">>]),
+	    {atomic, Res}
+    catch
+	?EX_RULE(throw, {aborted, Reason}, _) when NRestarts > 0 ->
+	    sql_query_internal([<<"rollback;">>]),
+	    outer_transaction(F, NRestarts - 1, Reason);
+	?EX_RULE(throw, {aborted, Reason}, Stack) when NRestarts =:= 0 ->
+	    ?ERROR_MSG("SQL transaction restarts exceeded~n** "
+		       "Restarts: ~p~n** Last abort reason: "
+		       "~p~n** Stacktrace: ~p~n** When State "
+		       "== ~p",
+		       [?MAX_TRANSACTION_RESTARTS, Reason,
+			?EX_STACK(Stack), get(?STATE_KEY)]),
+	    sql_query_internal([<<"rollback;">>]),
+	    {aborted, Reason};
+	?EX_RULE(exit, Reason, _) ->
+	    sql_query_internal([<<"rollback;">>]),
+	    {aborted, Reason}
     end.
 
 execute_bloc(F) ->
@@ -594,10 +602,9 @@ sql_query_internal(#sql_query{} = Query) ->
 		{error, <<"killed">>};
 	      exit:{normal, _} ->
 		{error, <<"terminated unexpectedly">>};
-	      Class:Reason ->
-                ST = erlang:get_stacktrace(),
+	      ?EX_RULE(Class, Reason, Stack) ->
                 ?ERROR_MSG("Internal error while processing SQL query: ~p",
-                           [{Class, Reason, ST}]),
+                           [{Class, Reason, ?EX_STACK(Stack)}]),
                 {error, <<"internal error">>}
         end,
     check_error(Res, Query);
@@ -732,12 +739,11 @@ sql_query_format_res({selected, _, Rows}, SQLQuery) ->
                   try
                       [(SQLQuery#sql_query.format_res)(Row)]
                   catch
-                      Class:Reason ->
-                          ST = erlang:get_stacktrace(),
+		      ?EX_RULE(Class, Reason, Stack) ->
                           ?ERROR_MSG("Error while processing "
                                      "SQL query result: ~p~n"
                                      "row: ~p",
-                                     [{Class, Reason, ST}, Row]),
+                                     [{Class, Reason, ?EX_STACK(Stack)}, Row]),
                           []
                   end
           end, Rows),
@@ -1065,9 +1071,9 @@ init_mssql(Host) ->
     case filelib:ensure_dir(freetds_config()) of
 	ok ->
 	    try
-		ok = file:write_file(freetds_config(), FreeTDS, [append]),
-		ok = file:write_file(odbcinst_config(), ODBCINST),
-		ok = file:write_file(odbc_config(), ODBCINI, [append]),
+		ok = write_file_if_new(freetds_config(), FreeTDS),
+		ok = write_file_if_new(odbcinst_config(), ODBCINST),
+		ok = write_file_if_new(odbc_config(), ODBCINI),
 		os:putenv("ODBCSYSINI", tmp_dir()),
 		os:putenv("FREETDS", freetds_config()),
 		os:putenv("FREETDSCONF", freetds_config()),
@@ -1081,6 +1087,12 @@ init_mssql(Host) ->
 	    ?ERROR_MSG("failed to create temporary directory ~s: ~s",
 		       [tmp_dir(), file:format_error(Reason)]),
 	    Err
+    end.
+
+write_file_if_new(File, Payload) ->
+    case filelib:is_file(File) of
+	true -> ok;
+	false -> file:write_file(File, Payload)
     end.
 
 tmp_dir() ->

@@ -5,7 +5,7 @@
 %%% Created :  1 Dec 2007 by Christophe Romain <christophe.romain@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -118,8 +118,7 @@ create_node(Nidx, Owner) ->
     node_flat:create_node(Nidx, Owner).
 
 delete_node(Nodes) ->
-    {result, {_, _, Result}} = node_flat:delete_node(Nodes),
-    {result, {default, Result}}.
+    node_flat:delete_node(Nodes).
 
 subscribe_node(Nidx, Sender, Subscriber, AccessModel,
 	    SendLast, PresenceSubscription, RosterGroup, Options) ->

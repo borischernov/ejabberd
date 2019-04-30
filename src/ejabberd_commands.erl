@@ -5,7 +5,7 @@
 %%% Created : 20 May 2008 by Badlop <badlop@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -492,6 +492,7 @@ do_execute_command(Command, Arguments) ->
     Module = Command#ejabberd_commands.module,
     Function = Command#ejabberd_commands.function,
     ?DEBUG("Executing command ~p:~p with Args=~p", [Module, Function, Arguments]),
+    ejabberd_hooks:run(api_call, [Module, Function, Arguments]),
     apply(Module, Function, Arguments).
 
 -spec get_tags_commands() -> [{string(), [string()]}].

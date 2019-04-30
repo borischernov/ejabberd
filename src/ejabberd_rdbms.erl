@@ -5,7 +5,7 @@
 %%% Created : 31 Jan 2003 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -98,7 +98,10 @@ stop_host(Host) ->
 
 -spec reload_host(binary()) -> ok.
 reload_host(Host) ->
-    ejabberd_sql_sup:reload(Host).
+    case needs_sql(Host) of
+	{true, _} -> ejabberd_sql_sup:reload(Host);
+	false -> ok
+    end.
 
 %% Returns {true, App} if we have configured sql for the given host
 needs_sql(Host) ->

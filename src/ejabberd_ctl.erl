@@ -5,7 +5,7 @@
 %%% Created : 11 Jan 2004 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2018   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -59,6 +59,7 @@
 -include("ejabberd_ctl.hrl").
 -include("ejabberd_commands.hrl").
 -include("logger.hrl").
+-include("ejabberd_stacktrace.hrl").
 
 -define(DEFAULT_VERSION, 1000000).
 
@@ -327,9 +328,9 @@ try_call_command(Args, Auth, AccessCommands, Version) ->
     catch
 	throw:Error ->
 	    {io_lib:format("~p", [Error]), ?STATUS_ERROR};
-	A:Why ->
-	    Stack = erlang:get_stacktrace(),
-	    {io_lib:format("Problem '~p ~p' occurred executing the command.~nStacktrace: ~p", [A, Why, Stack]), ?STATUS_ERROR}
+	?EX_RULE(A, Why, Stack) ->
+	    {io_lib:format("Problem '~p ~p' occurred executing the command.~nStacktrace: ~p",
+			   [A, Why, ?EX_STACK(Stack)]), ?STATUS_ERROR}
     end.
 
 %% @spec (Args::[string()], Auth, AccessCommands) -> string() | integer() | {string(), integer()} | {error, ErrorType}
