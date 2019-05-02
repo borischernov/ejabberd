@@ -143,20 +143,23 @@ do_start_lager_syslog(Level) ->
         undefined -> error(bad_lager_rsyslog_options);
         Any -> Any
     end,
-    ConsoleLevel = case get_lager_version() >= "3.6.0" of
-		       true -> [{level, Level}];
-		       false -> Level
-		   end,
+%%    ConsoleLevel = case get_lager_version() >= "3.6.0" of
+%%		       true -> [{level, Level}];
+%%		       false -> Level
+%%		   end,
     application:set_env(lager, handlers, [
-        {lager_console_backend, ConsoleLevel},
+%%        {lager_console_backend, ConsoleLevel},
         {lager_rsyslog_backend, RsyslogOptions }
     ]),
     application:set_env(lager, crash_log, false),
+    application:set_env(lager, async_threshold, undefined),
+    application:set_env(lager, killer_hwm, 1000),
+    application:set_env(lager, killer_reinstall_after, 5000),
     ejabberd:start_app(lager),
     lists:foreach(fun(Handler) ->
 			  lager:set_loghwm(Handler, LogRateLimit)
 		  end, gen_event:which_handlers(lager_event)),
-    error_logger:info_msg("Lager syslog  backend started."),
+    error_logger:info_msg("Lager syslog backend started."),
     ok.
 
 %% Start lager
