@@ -29,9 +29,7 @@
 
 -export([start/1, stop/1, get/2, get/3, post/4, delete/2,
          put/4, patch/4, request/6, with_retry/4,
-         encode_json/1, opt_type/1]).
-
--include("logger.hrl").
+         opt_type/1]).
 
 -define(HTTP_TIMEOUT, 10000).
 -define(CONNECT_TIMEOUT, 8000).
@@ -79,10 +77,18 @@ patch(Server, Path, Params, Content) ->
     Data = encode_json(Content),
     request(Server, patch, Path, Params, ?CONTENT_TYPE, Data).
 
+request(Server, Method, Path, _Params, _Mime, {error, Error}) ->
+    ejabberd_hooks:run(backend_api_error, Server,
+                       [Server, Method, Path, Error]),
+    {error, Error};
 request(Server, Method, Path, Params, Mime, Data) ->
-    URI = to_list(url(Server, Path, Params)),
-    Opts = [{connect_timeout, ?CONNECT_TIMEOUT},
-            {timeout, ?HTTP_TIMEOUT}],
+    {Query, Opts} = case Params of
+			{_, _} -> Params;
+			_ -> {Params, []}
+		   end,
+    URI = to_list(url(Server, Path, Query)),
+    HttpOpts = [{connect_timeout, ?CONNECT_TIMEOUT},
+		{timeout, ?HTTP_TIMEOUT}],
     Hdrs = [{"connection", "keep-alive"},
             {"Accept", "application/json"},
 	    {"User-Agent", "ejabberd"}]
@@ -94,56 +100,40 @@ request(Server, Method, Path, Params, Mime, Data) ->
                   {URI, Hdrs}
           end,
     Begin = os:timestamp(),
-    Result = try httpc:request(Method, Req, Opts, [{body_format, binary}]) of
-        {ok, {{_, Code, _}, _, <<>>}} ->
-            {ok, Code, []};
-        {ok, {{_, Code, _}, _, <<" ">>}} ->
-            {ok, Code, []};
-        {ok, {{_, Code, _}, _, <<"\r\n">>}} ->
-            {ok, Code, []};
-        {ok, {{_, Code, _}, _, Body}} ->
-            try jiffy:decode(Body) of
+    ejabberd_hooks:run(backend_api_call, Server, [Server, Method, Path]),
+    Result = try httpc:request(Method, Req, HttpOpts, [{body_format, binary}]) of
+        {ok, {{_, Code, _}, RetHdrs, Body}} ->
+            try decode_json(Body) of
                 JSon ->
-                    {ok, Code, JSon}
+		    case proplists:get_bool(return_headers, Opts) of
+			true -> {ok, Code, RetHdrs, JSon};
+			false -> {ok, Code, JSon}
+		    end
             catch
-                _:Error ->
-                    ?ERROR_MSG("HTTP response decode failed:~n"
-                               "** URI = ~s~n"
-                               "** Body = ~p~n"
-                               "** Err = ~p",
-                               [URI, Body, Error]),
-                    {error, {invalid_json, Body}}
+                _:Reason ->
+                    {error, {invalid_json, Body, Reason}}
             end;
         {error, Reason} ->
-            ?ERROR_MSG("HTTP request failed:~n"
-                       "** URI = ~s~n"
-                       "** Err = ~p",
-                       [URI, Reason]),
             {error, {http_error, {error, Reason}}}
         catch
         exit:Reason ->
-            ?ERROR_MSG("HTTP request failed:~n"
-                       "** URI = ~s~n"
-                       "** Err = ~p",
-                       [URI, Reason]),
             {error, {http_error, {error, Reason}}}
     end,
-    ejabberd_hooks:run(backend_api_call, Server, [Server, Method, Path]),
     case Result of
-        {ok, _, _} ->
+        {error, {http_error, {error, timeout}}} ->
+            ejabberd_hooks:run(backend_api_timeout, Server,
+                               [Server, Method, Path]);
+        {error, {http_error, {error, connect_timeout}}} ->
+            ejabberd_hooks:run(backend_api_timeout, Server,
+                               [Server, Method, Path]);
+        {error, Error} ->
+            ejabberd_hooks:run(backend_api_error, Server,
+                               [Server, Method, Path, Error]);
+        _ ->
             End = os:timestamp(),
             Elapsed = timer:now_diff(End, Begin) div 1000, %% time in ms
             ejabberd_hooks:run(backend_api_response_time, Server,
-                               [Server, Method, Path, Elapsed]);
-        {error, {http_error,{error,timeout}}} ->
-            ejabberd_hooks:run(backend_api_timeout, Server,
-                               [Server, Method, Path]);
-        {error, {http_error,{error,connect_timeout}}} ->
-            ejabberd_hooks:run(backend_api_timeout, Server,
-                               [Server, Method, Path]);
-        {error, _} ->
-            ejabberd_hooks:run(backend_api_error, Server,
-                               [Server, Method, Path])
+                               [Server, Method, Path, Elapsed])
     end,
     Result.
 
@@ -159,14 +149,15 @@ to_list(V) when is_list(V) ->
 encode_json(Content) ->
     case catch jiffy:encode(Content) of
         {'EXIT', Reason} ->
-            ?ERROR_MSG("HTTP content encodage failed:~n"
-                       "** Content = ~p~n"
-                       "** Err = ~p",
-                       [Content, Reason]),
-            <<>>;
+            {error, {invalid_payload, Content, Reason}};
         Encoded ->
             Encoded
     end.
+
+decode_json(<<>>) -> [];
+decode_json(<<" ">>) -> [];
+decode_json(<<"\r\n">>) -> [];
+decode_json(Data) -> jiffy:decode(Data).
 
 custom_headers(Server) ->
   case ejabberd_config:get_option({ext_api_headers, Server},

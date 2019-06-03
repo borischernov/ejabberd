@@ -66,7 +66,7 @@
 	 count_online_rooms_by_user/3,
 	 get_online_rooms_by_user/3,
 	 can_use_nick/4,
-	 check_create_room/4]).
+	 get_subscribed_rooms/2]).
 
 -export([init/1, handle_call/3, handle_cast/2,
 	 handle_info/2, terminate/2, code_change/3,
@@ -107,20 +107,19 @@
 -callback unregister_online_user(binary(), ljid(), binary(), binary()) -> any().
 -callback count_online_rooms_by_user(binary(), binary(), binary()) -> non_neg_integer().
 -callback get_online_rooms_by_user(binary(), binary(), binary()) -> [{binary(), binary()}].
--callback get_subscribed_rooms(binary(), binary(), jid()) -> [{ljid(), [binary()]}] | [].
+-callback get_subscribed_rooms(binary(), binary(), jid()) ->
+          {ok, [{jid(), [binary()]}]} | {error, db_failure}.
+
+-optional_callbacks([get_subscribed_rooms/3]).
 
 %%====================================================================
 %% API
 %%====================================================================
 start(Host, Opts) ->
-    ejabberd_hooks:add(check_create_room, Host, ?MODULE,
-               check_create_room, 50),
     gen_mod:start_child(?MODULE, Host, Opts).
 
 stop(Host) ->
     Rooms = shutdown_rooms(Host),
-    ejabberd_hooks:delete(check_create_room, Host, ?MODULE,
-               check_create_room, 50),
     gen_mod:stop_child(?MODULE, Host),
     {wait, Rooms}.
 
@@ -438,18 +437,14 @@ do_route1(_Host, _ServerHost, _Access, _HistorySize, _RoomShaper,
     ejabberd_router:route_error(Packet, Err);
 do_route1(Host, ServerHost, Access, HistorySize, RoomShaper,
 	  From, To, Packet, DefRoomOpts, QueueType) ->
-    {_AccessRoute, AccessCreate, _AccessAdmin, _AccessPersistent, _AccessMam} = Access,
     {Room, _, Nick} = jid:tolower(To),
     RMod = gen_mod:ram_db_mod(ServerHost, ?MODULE),
     case RMod:find_online_room(ServerHost, Room, Host) of
 	error ->
 	    case is_create_request(Packet) of
 		true ->
-		    case check_user_can_create_room(
-			   ServerHost, AccessCreate, From, Room) and
-			ejabberd_hooks:run_fold(check_create_room,
-					ServerHost, true,
-					[ServerHost, Room, Host]) of
+		    case check_create_room(
+			   ServerHost, Host, Room, From, Access) of
 			true ->
 			    {ok, Pid} = start_new_room(
 					  Host, ServerHost, Access,
@@ -584,7 +579,7 @@ process_muc_unique(#iq{type = set, lang = Lang} = IQ) ->
     xmpp:make_error(IQ, xmpp:err_not_allowed(Txt, Lang));
 process_muc_unique(#iq{from = From, type = get,
 		       sub_els = [#muc_unique{}]} = IQ) ->
-    Name = str:sha(term_to_binary([From, p1_time_compat:timestamp(),
+    Name = str:sha(term_to_binary([From, erlang:timestamp(),
 				      p1_rand:get_string()])),
     xmpp:make_iq_result(IQ, #muc_unique{name = Name}).
 
@@ -592,12 +587,19 @@ process_muc_unique(#iq{from = From, type = get,
 process_mucsub(#iq{type = set, lang = Lang} = IQ) ->
     Txt = <<"Value 'set' of 'type' attribute is not allowed">>,
     xmpp:make_error(IQ, xmpp:err_not_allowed(Txt, Lang));
-process_mucsub(#iq{type = get, from = From, to = To,
+process_mucsub(#iq{type = get, from = From, to = To, lang = Lang,
 		   sub_els = [#muc_subscriptions{}]} = IQ) ->
     Host = To#jid.lserver,
     ServerHost = ejabberd_router:host_of_route(Host),
-    Subs = get_subscribed_rooms(ServerHost, Host, From),
-    xmpp:make_iq_result(IQ, #muc_subscriptions{list = Subs});
+    case get_subscribed_rooms(ServerHost, Host, From) of
+	{ok, Subs} ->
+	    List = [#muc_subscription{jid = JID, events = Nodes}
+		    || {JID, Nodes} <- Subs],
+	    xmpp:make_iq_result(IQ, #muc_subscriptions{list = List});
+	{error, _} ->
+	    Txt = <<"Database failure">>,
+	    xmpp:make_error(IQ, xmpp:err_internal_server_error(Txt, Lang))
+    end;
 process_mucsub(#iq{lang = Lang} = IQ) ->
     Txt = <<"No module is handling this query">>,
     xmpp:make_error(IQ, xmpp:err_service_unavailable(Txt, Lang)).
@@ -611,19 +613,37 @@ is_create_request(#iq{type = T} = IQ) when T == get; T == set ->
 is_create_request(_) ->
     false.
 
-check_user_can_create_room(ServerHost, AccessCreate,
-			   From, _RoomID) ->
+-spec check_create_room(binary(), binary(), binary(), jid(), tuple())
+      -> boolean().
+check_create_room(ServerHost, Host, Room, From, Access) ->
+    {_AccessRoute, AccessCreate, AccessAdmin,
+     _AccessPersistent, _AccessMam} = Access,
     case acl:match_rule(ServerHost, AccessCreate, From) of
-      allow -> true;
-      _ -> false
+	allow ->
+	    case gen_mod:get_module_opt(ServerHost, ?MODULE, max_room_id) of
+		Max when byte_size(Room) =< Max ->
+		    Regexp = gen_mod:get_module_opt(
+			       ServerHost, ?MODULE, regexp_room_id),
+		    case re:run(Room, Regexp, [unicode, {capture, none}]) of
+			match ->
+			    case acl:match_rule(
+				   ServerHost, AccessAdmin, From) of
+				allow ->
+				    true;
+				_ ->
+				    ejabberd_hooks:run_fold(
+				      check_create_room, ServerHost, true,
+				      [ServerHost, Room, Host])
+			    end;
+			_ ->
+			    false
+		    end;
+		_ ->
+		    false
+	    end;
+	_ ->
+	    false
     end.
-
-check_create_room(Acc, ServerHost, RoomID, _Host) ->
-    Max = gen_mod:get_module_opt(ServerHost, ?MODULE, max_room_id),
-    Regexp = gen_mod:get_module_opt(ServerHost, ?MODULE, regexp_room_id),
-    Acc and
-    (byte_size(RoomID) =< Max) and
-    (re:run(RoomID, Regexp, [unicode, {capture, none}]) == match).
 
 get_rooms(ServerHost, Host) ->
     LServer = jid:nameprep(ServerHost),
@@ -634,31 +654,46 @@ load_permanent_rooms(Host, ServerHost, Access,
 		     HistorySize, RoomShaper, QueueType) ->
     RMod = gen_mod:ram_db_mod(ServerHost, ?MODULE),
     lists:foreach(
-      fun(R) ->
-		{Room, Host} = R#muc_room.name_host,
-	      case RMod:find_online_room(ServerHost, Room, Host) of
-		  error ->
-			{ok, Pid} = mod_muc_room:start(Host,
-				ServerHost, Access, Room,
-				HistorySize, RoomShaper,
-				R#muc_room.opts, QueueType),
-		      RMod:register_online_room(ServerHost, Room, Host, Pid);
-		  {ok, _} ->
-		      ok
-		end
-	end,
-	get_rooms(ServerHost, Host)).
+	fun(R) ->
+	    {Room, Host} = R#muc_room.name_host,
+	    case proplists:get_bool(persistent, R#muc_room.opts) of
+		true ->
+		    case RMod:find_online_room(ServerHost, Room, Host) of
+			error ->
+			    {ok, Pid} = mod_muc_room:start(Host,
+							   ServerHost, Access, Room,
+							   HistorySize, RoomShaper,
+							   R#muc_room.opts, QueueType),
+			    RMod:register_online_room(ServerHost, Room, Host, Pid);
+			{ok, _} ->
+			    ok
+		    end;
+		_ ->
+		    forget_room(ServerHost, Host, Room)
+	    end
+	end, get_rooms(ServerHost, Host)).
 
 start_new_room(Host, ServerHost, Access, Room,
 	    HistorySize, RoomShaper, From,
 	    Nick, DefRoomOpts, QueueType) ->
-    case restore_room(ServerHost, Host, Room) of
+    Opts = case restore_room(ServerHost, Host, Room) of
+	       error ->
+		   error;
+	       Opts0 ->
+		   case proplists:get_bool(persistent, Opts0) of
+		       true ->
+			   Opts0;
+		       _ ->
+			   error
+		   end
+	   end,
+    case Opts of
 	error ->
 	    ?DEBUG("MUC: open new room '~s'~n", [Room]),
 	    mod_muc_room:start(Host, ServerHost, Access, Room,
 		HistorySize, RoomShaper,
 		From, Nick, DefRoomOpts, QueueType);
-	Opts ->
+	_ ->
 	    ?DEBUG("MUC: restore room '~s'~n", [Room]),
 	    mod_muc_room:start(Host, ServerHost, Access, Room,
 		HistorySize, RoomShaper, Opts, QueueType)
@@ -705,38 +740,62 @@ iq_disco_items(_ServerHost, _Host, _From, Lang, _MaxRoomsDiscoItems, _Node, _RSM
 -spec get_room_disco_item({binary(), binary(), pid()},
 			  term()) -> {ok, disco_item()} |
 				     {error, timeout | notfound}.
-get_room_disco_item({Name, Host, Pid}, Query) ->
-	    RoomJID = jid:make(Name, Host),
-	    try p1_fsm:sync_send_all_state_event(Pid, Query, 100) of
-		{item, Desc} ->
-		    {ok, #disco_item{jid = RoomJID, name = Desc}};
-		false ->
-		    {error, notfound}
-	    catch _:{timeout, {p1_fsm, _, _}} ->
-		    {error, timeout};
-		  _:{_, {p1_fsm, _, _}} ->
-		    {error, notfound}
+get_room_disco_item({Name, Host, Pid},
+		    {get_disco_item, Filter, JID, Lang}) ->
+    RoomJID = jid:make(Name, Host),
+    Timeout = 100,
+    Time = erlang:monotonic_time(millisecond),
+    Query1 = {get_disco_item, Filter, JID, Lang, Time+Timeout},
+    try p1_fsm:sync_send_all_state_event(Pid, Query1, Timeout) of
+	{item, Desc} ->
+	    {ok, #disco_item{jid = RoomJID, name = Desc}};
+	false ->
+	    {error, notfound}
+    catch _:{timeout, {p1_fsm, _, _}} ->
+	    {error, timeout};
+	  _:{_, {p1_fsm, _, _}} ->
+	    {error, notfound}
     end.
 
+-spec get_subscribed_rooms(binary(), jid()) -> {ok, [{jid(), [binary()]}]} | {error, any()}.
+get_subscribed_rooms(Host, User) ->
+    ServerHost = ejabberd_router:host_of_route(Host),
+    get_subscribed_rooms(ServerHost, Host, User).
+
+-record(subscriber, {jid :: jid(),
+		     nick = <<>> :: binary(),
+		     nodes = [] :: [binary()]}).
+
+-spec get_subscribed_rooms(binary(), binary(), jid()) ->
+			   {ok, [{jid(), [binary()]}]} | {error, any()}.
 get_subscribed_rooms(ServerHost, Host, From) ->
     LServer = jid:nameprep(ServerHost),
     Mod = gen_mod:db_mod(LServer, ?MODULE),
     BareFrom = jid:remove_resource(From),
-    case Mod:get_subscribed_rooms(LServer, Host, BareFrom) of
-	not_implemented ->
+    case erlang:function_exported(Mod, get_subscribed_rooms, 3) of
+	false ->
 	    Rooms = get_online_rooms(ServerHost, Host),
-	    lists:flatmap(
-	      fun({Name, _, Pid}) ->
-		      case p1_fsm:sync_send_all_state_event(Pid, {is_subscribed, BareFrom}) of
-			  {true, Nodes} ->
-				[#muc_subscription{jid = jid:make(Name, Host), events = Nodes}];
-			  false -> []
-		      end;
-		 (_) ->
-		      []
-	      end, Rooms);
-	V ->
-	    [#muc_subscription{jid = Jid, events = Nodes} || {Jid, Nodes} <- V]
+	    {ok, lists:flatmap(
+		   fun({Name, _, Pid}) when Pid == self() ->
+		       USR = jid:split(BareFrom),
+		       case erlang:get(muc_subscribers) of
+			   #{USR := #subscriber{nodes = Nodes}} ->
+			       [{jid:make(Name, Host), Nodes}];
+			   _ ->
+			       []
+		       end;
+		       ({Name, _, Pid}) ->
+			   case p1_fsm:sync_send_all_state_event(
+				  Pid, {is_subscribed, BareFrom}) of
+			       {true, Nodes} ->
+				   [{jid:make(Name, Host), Nodes}];
+			       false -> []
+			   end;
+		      (_) ->
+			   []
+		   end, Rooms)};
+	true ->
+	    Mod:get_subscribed_rooms(LServer, Host, BareFrom)
     end.
 
 get_nick(ServerHost, Host, From) ->

@@ -162,7 +162,7 @@ normal_state({route, <<"">>,
 	is_user_allowed_message_nonparticipant(From, StateData) of
 	true when Type == groupchat ->
 	    Activity = get_user_activity(From, StateData),
-	    Now = p1_time_compat:system_time(micro_seconds),
+	    Now = erlang:system_time(microsecond),
 	    MinMessageInterval = trunc(gen_mod:get_module_opt(
 					 StateData#state.server_host,
 					 mod_muc, min_message_interval)
@@ -322,7 +322,8 @@ normal_state({route, <<"">>,
 		end,
 		case NewStateData of
 		    stop ->
-			{stop, normal, StateData};
+			Conf = StateData#state.config,
+			{stop, normal, StateData#state{config = Conf#config{persistent = false}}};
 		    _ when NewStateData#state.just_created ->
 			close_room_if_temporary_and_empty(NewStateData);
 		    _ ->
@@ -344,7 +345,7 @@ normal_state({route, <<"">>, #iq{} = IQ}, StateData) ->
     end;
 normal_state({route, Nick, #presence{from = From} = Packet}, StateData) ->
     Activity = get_user_activity(From, StateData),
-    Now = p1_time_compat:system_time(micro_seconds),
+    Now = erlang:system_time(microsecond),
     MinPresenceInterval =
 	trunc(gen_mod:get_module_opt(StateData#state.server_host,
 				     mod_muc, min_presence_interval)
@@ -498,7 +499,8 @@ handle_event({destroy, Reason}, _StateName,
     ?INFO_MSG("Destroyed MUC room ~s with reason: ~p",
 	      [jid:encode(StateData#state.jid), Reason]),
     add_to_log(room_existence, destroyed, StateData),
-    {stop, shutdown, StateData};
+    Conf = StateData#state.config,
+    {stop, shutdown, StateData#state{config = Conf#config{persistent = false}}};
 handle_event(destroy, StateName, StateData) ->
     ?INFO_MSG("Destroyed MUC room ~s",
 	      [jid:encode(StateData#state.jid)]),
@@ -510,7 +512,7 @@ handle_event({set_affiliations, Affiliations},
 handle_event(_Event, StateName, StateData) ->
     {next_state, StateName, StateData}.
 
-handle_sync_event({get_disco_item, Filter, JID, Lang}, _From, StateName, StateData) ->
+handle_sync_event({get_disco_item, Filter, JID, Lang, Time}, _From, StateName, StateData) ->
     Len = maps:size(StateData#state.nicks),
     Reply = case (Filter == all) or (Filter == Len) or ((Filter /= 0) and (Len /= 0)) of
 	true ->
@@ -519,10 +521,17 @@ handle_sync_event({get_disco_item, Filter, JID, Lang}, _From, StateName, StateDa
 	false ->
 	    false
     end,
-    {reply, Reply, StateName, StateData};
-%% This clause is only for backwards compatibility
+    CurrentTime = erlang:monotonic_time(millisecond),
+    if CurrentTime < Time ->
+	    {reply, Reply, StateName, StateData};
+       true ->
+	    {next_state, StateName, StateData}
+    end;
+%% These two clauses are only for backward compatibility with nodes running old code
 handle_sync_event({get_disco_item, JID, Lang}, From, StateName, StateData) ->
     handle_sync_event({get_disco_item, any, JID, Lang}, From, StateName, StateData);
+handle_sync_event({get_disco_item, Filter, JID, Lang}, From, StateName, StateData) ->
+    handle_sync_event({get_disco_item, Filter, JID, Lang, infinity}, From, StateName, StateData);
 handle_sync_event(get_config, _From, StateName,
 		  StateData) ->
     {reply, {ok, StateData#state.config}, StateName,
@@ -536,6 +545,7 @@ handle_sync_event({change_config, Config}, _From,
     {reply, {ok, NSD#state.config}, StateName, NSD};
 handle_sync_event({change_state, NewStateData}, _From,
 		  StateName, _StateData) ->
+    erlang:put(muc_subscribers, NewStateData#state.subscribers),
     {reply, {ok, NewStateData}, StateName, NewStateData};
 handle_sync_event({process_item_change, Item, UJID}, _From, StateName, StateData) ->
     case process_item_change(Item, StateData, UJID) of
@@ -698,10 +708,10 @@ handle_info(config_reloaded, StateName, StateData) ->
 handle_info(_Info, StateName, StateData) ->
     {next_state, StateName, StateData}.
 
-terminate(Reason, _StateName, StateData) ->
+terminate(Reason, _StateName,
+	  #state{server_host = LServer, host = Host, room = Room} = StateData) ->
     try
-	?INFO_MSG("Stopping MUC room ~s@~s",
-		  [StateData#state.room, StateData#state.host]),
+	?INFO_MSG("Stopping MUC room ~s@~s", [Room, Host]),
 	ReasonT = case Reason of
 		      shutdown ->
 			  <<"You are being removed from the room "
@@ -728,12 +738,16 @@ terminate(Reason, _StateName, StateData) ->
 		  tab_remove_online_user(LJID, StateData)
 	  end, [], get_users_and_subscribers(StateData)),
 	add_to_log(room_existence, stopped, StateData),
-	mod_muc:room_destroyed(StateData#state.host, StateData#state.room, self(),
-			       StateData#state.server_host)
+	case (StateData#state.config)#config.persistent of
+	    false ->
+		ejabberd_hooks:run(room_destroyed, LServer, [LServer, Room, Host]);
+	    _ ->
+		ok
+	end,
+	mod_muc:room_destroyed(Host, Room, self(), LServer)
     catch ?EX_RULE(E, R, St) ->
-	    mod_muc:room_destroyed(StateData#state.host, StateData#state.room, self(),
-				   StateData#state.server_host),
-	    ?ERROR_MSG("Got exception on room termination: ~p", [{E, {R, ?EX_STACK(St)}}])
+	mod_muc:room_destroyed(Host, Room, self(), LServer),
+	?ERROR_MSG("Got exception on room termination: ~p", [{E, {R, ?EX_STACK(St)}}])
     end,
     ok.
 
@@ -903,7 +917,7 @@ process_voice_request(From, Pkt, StateData) ->
 	true ->
 	    MinInterval = (StateData#state.config)#config.voice_request_min_interval,
 	    BareFrom = jid:remove_resource(jid:tolower(From)),
-	    NowPriority = -p1_time_compat:system_time(micro_seconds),
+	    NowPriority = -erlang:system_time(microsecond),
 	    CleanPriority = NowPriority + MinInterval * 1000000,
 	    Times = clean_treap(StateData#state.last_voice_request_time,
 				CleanPriority),
@@ -1134,6 +1148,7 @@ close_room_if_temporary_and_empty(StateData1) ->
 		    "and empty",
 		    [jid:encode(StateData1#state.jid)]),
 	  add_to_log(room_existence, destroyed, StateData1),
+	  maybe_forget_room(StateData1),
 	  {stop, normal, StateData1};
       _ -> {next_state, normal_state, StateData1}
     end.
@@ -1572,7 +1587,7 @@ store_user_activity(JID, UserActivity, StateData) ->
 				     mod_muc, min_presence_interval)
 	      * 1000),
     Key = jid:tolower(JID),
-    Now = p1_time_compat:system_time(micro_seconds),
+    Now = erlang:system_time(microsecond),
     Activity1 = clean_treap(StateData#state.activity,
 			    {1, -Now}),
     Activity = case treap:lookup(Key, Activity1) of
@@ -1688,8 +1703,14 @@ update_online_user(JID, #user{nick = Nick} = User, StateData) ->
     end,
     NewStateData.
 
-set_subscriber(JID, Nick, Nodes, StateData) ->
-    BareJID = jid:remove_resource(JID),
+set_subscriber(JID, Nick, Nodes,
+	       #state{room = Room, host = Host, server_host = ServerHost} = StateData) ->
+    BareJID = case JID of
+		  #jid{} -> jid:remove_resource(JID);
+		  _ ->
+		      ?ERROR_MSG("Invalid subscriber JID in set_subscriber ~p", [JID]),
+		      jid:remove_resource(jid:make(JID))
+	      end,
     LBareJID = jid:tolower(BareJID),
     Subscribers = maps:put(LBareJID,
 			   #subscriber{jid = BareJID,
@@ -1702,7 +1723,8 @@ set_subscriber(JID, Nick, Nodes, StateData) ->
     store_room(NewStateData, [{add_subscription, BareJID, Nick, Nodes}]),
     case not maps:is_key(LBareJID, StateData#state.subscribers) of
 	true ->
-	    send_subscriptions_change_notifications(BareJID, Nick, subscribe, NewStateData);
+	    send_subscriptions_change_notifications(BareJID, Nick, subscribe, NewStateData),
+	    ejabberd_hooks:run(muc_subscribed, ServerHost, [ServerHost, Room, Host, BareJID]);
 	_ ->
 	    ok
     end,
@@ -1960,7 +1982,7 @@ add_new_user(From, Nick, Packet, StateData) ->
 		  ResultState =
 		      case NewStateData#state.just_created of
 			  true ->
-			      NewStateData#state{just_created = misc:now_to_usec(now())};
+			      NewStateData#state{just_created = erlang:system_time(microsecond)};
 			  _ ->
 			      Robots = maps:remove(From, StateData#state.robots),
 			      NewStateData#state{robots = Robots}
@@ -2103,7 +2125,7 @@ extract_password(#iq{} = IQ) ->
 get_history(Nick, Packet, #state{history = History}) ->
     case xmpp:get_subtag(Packet, #muc{}) of
 	#muc{history = #muc_history{} = MUCHistory} ->
-	    Now = p1_time_compat:timestamp(),
+	    Now = erlang:timestamp(),
 	    Q = History#lqueue.queue,
 	    filter_history(Q, Now, Nick, MUCHistory);
 	_ ->
@@ -2518,7 +2540,7 @@ add_message_to_history(FromNick, FromJID, Packet, StateData) ->
     add_to_log(text, {FromNick, Packet}, StateData),
     case check_subject(Packet) of
 	[] ->
-	    TimeStamp = p1_time_compat:timestamp(),
+	    TimeStamp = erlang:timestamp(),
 	    AddrPacket = case (StateData#state.config)#config.anonymous of
 			     true -> Packet;
 			     false ->
@@ -3473,13 +3495,12 @@ change_config(Config, StateData) ->
                 store_room(StateData1),
                 StateData1;
             {true, false} ->
-                Affiliations = get_affiliations(StateData),
-                mod_muc:forget_room(StateData1#state.server_host,
-                                    StateData1#state.host,
-                                    StateData1#state.room),
-                StateData1#state{affiliations = Affiliations};
-            {false, false} ->
-                StateData1
+		Affiliations = get_affiliations(StateData),
+		maybe_forget_room(StateData),
+		StateData1#state{affiliations = Affiliations};
+	    _ ->
+		maybe_forget_room(StateData),
+		StateData1
         end,
     case {(StateData#state.config)#config.members_only,
 	  Config#config.members_only} of
@@ -3674,14 +3695,20 @@ set_opts([{Opt, Val} | Opts], StateData) ->
 		  {Subscribers, Nicks} =
 		      lists:foldl(
 			fun({JID, Nick, Nodes}, {SubAcc, NickAcc}) ->
-				BareJID = jid:remove_resource(JID),
-				{maps:put(
-				   jid:tolower(BareJID),
-				   #subscriber{jid = BareJID,
-					       nick = Nick,
-					       nodes = Nodes},
-				   SubAcc),
-				 maps:put(Nick, [jid:tolower(BareJID)], NickAcc)}
+			    BareJID = case JID of
+					  #jid{} -> jid:remove_resource(JID);
+					  _ ->
+					      ?ERROR_MSG("Invalid subscriber JID in set_opts ~p", [JID]),
+					      jid:remove_resource(jid:make(JID))
+				      end,
+			    LBareJID = jid:tolower(BareJID),
+			    {maps:put(
+				LBareJID,
+				#subscriber{jid = BareJID,
+					    nick = Nick,
+					    nodes = Nodes},
+				SubAcc),
+			     maps:put(Nick, [LBareJID], NickAcc)}
 			end, {#{}, #{}}, Val),
 		  StateData#state{subscribers = Subscribers,
 				  subscriber_nicks = Nicks};
@@ -3803,13 +3830,26 @@ destroy_room(DEl, StateData) ->
 			   Info#user.jid, Packet,
 			   ?NS_MUCSUB_NODES_CONFIG, StateData)
       end, ok, get_users_and_subscribers(StateData)),
-    case (StateData#state.config)#config.persistent of
-      true ->
-	  mod_muc:forget_room(StateData#state.server_host,
-			      StateData#state.host, StateData#state.room);
-      false -> ok
-    end,
+    maybe_forget_room(StateData),
     {result, undefined, stop}.
+
+maybe_forget_room(StateData) ->
+    Forget = case (StateData#state.config)#config.persistent of
+		 true ->
+		     true;
+		 _ ->
+		     Mod = gen_mod:db_mod(StateData#state.server_host, mod_muc),
+		     erlang:function_exported(Mod, get_subscribed_rooms, 3)
+	     end,
+    case Forget of
+	true ->
+	    mod_muc:forget_room(StateData#state.server_host,
+				StateData#state.host,
+				StateData#state.room),
+	    StateData;
+	_ ->
+	    StateData
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Disco
@@ -4045,8 +4085,9 @@ process_iq_mucsub(From, #iq{type = set, lang = Lang,
 	    {error, xmpp:err_forbidden(Txt, Lang)}
     end;
 process_iq_mucsub(From, #iq{type = set, sub_els = [#muc_unsubscribe{}]},
-		  StateData) ->
-    LBareJID = jid:tolower(jid:remove_resource(From)),
+		  #state{room = Room, host = Host, server_host = ServerHost} = StateData) ->
+    BareJID = jid:remove_resource(From),
+    LBareJID = jid:tolower(BareJID),
     try maps:get(LBareJID, StateData#state.subscribers) of
 	#subscriber{nick = Nick} ->
 	    Nicks = maps:remove(Nick, StateData#state.subscriber_nicks),
@@ -4054,7 +4095,8 @@ process_iq_mucsub(From, #iq{type = set, sub_els = [#muc_unsubscribe{}]},
 	    NewStateData = StateData#state{subscribers = Subscribers,
 					   subscriber_nicks = Nicks},
 	    store_room(NewStateData, [{del_subscription, LBareJID}]),
-	    send_subscriptions_change_notifications(LBareJID, Nick, unsubscribe, StateData),
+	    send_subscriptions_change_notifications(BareJID, Nick, unsubscribe, StateData),
+	    ejabberd_hooks:run(muc_unsubscribed, ServerHost, [ServerHost, Room, Host, BareJID]),
 	    NewStateData2 = case close_room_if_temporary_and_empty(NewStateData) of
 		{stop, normal, _} -> stop;
 		{next_state, normal_state, SD} -> SD
@@ -4068,13 +4110,23 @@ process_iq_mucsub(From, #iq{type = get, lang = Lang,
 		  StateData) ->
     FAffiliation = get_affiliation(From, StateData),
     FRole = get_role(From, StateData),
-    if FRole == moderator; FAffiliation == owner; FAffiliation == admin ->
+    IsModerator = FRole == moderator orelse FAffiliation == owner orelse
+		  FAffiliation == admin,
+    case IsModerator orelse is_subscriber(From, StateData) of
+	true ->
+	    ShowJid = IsModerator orelse
+		      (StateData#state.config)#config.anonymous == false,
 	    Subs = maps:fold(
-		     fun(_, #subscriber{jid = J, nodes = Nodes}, Acc) ->
-			     [#muc_subscription{jid = J, events = Nodes}|Acc]
+		     fun(_, #subscriber{jid = J, nick = N, nodes = Nodes}, Acc) ->
+			 case ShowJid of
+			     true ->
+				 [#muc_subscription{jid = J, events = Nodes}|Acc];
+			     _ ->
+				 [#muc_subscription{nick = N, events = Nodes}|Acc]
+			 end
 		     end, [], StateData#state.subscribers),
 	    {result, #muc_subscriptions{list = Subs}, StateData};
-       true ->
+	_ ->
 	    Txt = <<"Moderator privileges required">>,
 	    {error, xmpp:err_forbidden(Txt, Lang)}
     end;
@@ -4328,7 +4380,21 @@ element_size(El) ->
 store_room(StateData) ->
     store_room(StateData, []).
 store_room(StateData, ChangesHints) ->
-    if (StateData#state.config)#config.persistent ->
+    % Let store persistent rooms or on those backends that have get_subscribed_rooms
+    erlang:put(muc_subscribers, StateData#state.subscribers),
+    ShouldStore = case (StateData#state.config)#config.persistent of
+		      true ->
+			  true;
+		      _ ->
+			  case ChangesHints of
+			      [] ->
+				  false;
+			      _ ->
+				  Mod = gen_mod:db_mod(StateData#state.server_host, mod_muc),
+				  erlang:function_exported(Mod, get_subscribed_rooms, 3)
+			  end
+		  end,
+    if ShouldStore ->
 	    mod_muc:store_room(StateData#state.server_host,
 			       StateData#state.host, StateData#state.room,
 			       make_opts(StateData),
@@ -4385,9 +4451,17 @@ send_wrapped(From, To, Packet, Node, State) ->
 		#subscriber{nodes = Nodes, jid = JID} ->
 		    case lists:member(Node, Nodes) of
 			true ->
-			    NewPacket = wrap(From, JID, Packet, Node),
+			    MamEnabled = (State#state.config)#config.mam,
+			    Id = case xmpp:get_subtag(Packet, #stanza_id{}) of
+				     #stanza_id{id = Id2} ->
+					 Id2;
+				     _ ->
+					 p1_rand:get_string()
+				 end,
+			    NewPacket = wrap(From, JID, Packet, Node, Id),
+			    NewPacket2 = xmpp:put_meta(NewPacket, in_muc_mam, MamEnabled),
 			    ejabberd_router:route(
-			      xmpp:set_from_to(NewPacket, State#state.jid, JID));
+			      xmpp:set_from_to(NewPacket2, State#state.jid, JID));
 			false ->
 			    ok
 		    end
@@ -4420,16 +4494,17 @@ send_wrapped(From, To, Packet, Node, State) ->
 	    ejabberd_router:route(xmpp:set_from_to(Packet, From, To))
     end.
 
--spec wrap(jid(), jid(), stanza(), binary()) -> message().
-wrap(From, To, Packet, Node) ->
+-spec wrap(jid(), jid(), stanza(), binary(), binary()) -> message().
+wrap(From, To, Packet, Node, Id) ->
     El = xmpp:set_from_to(Packet, From, To),
     #message{
-       sub_els = [#ps_event{
-		     items = #ps_items{
-				node = Node,
-				items = [#ps_item{
-					    id = p1_rand:get_string(),
-					    sub_els = [El]}]}}]}.
+	id = Id,
+	sub_els = [#ps_event{
+	    items = #ps_items{
+		node = Node,
+		items = [#ps_item{
+		    id = Id,
+		    sub_els = [El]}]}}]}.
 
 -spec send_wrapped_multiple(jid(), map(), stanza(), binary(), state()) -> ok.
 send_wrapped_multiple(From, Users, Packet, Node, State) ->

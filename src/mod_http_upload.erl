@@ -111,7 +111,8 @@
 	 external_secret        :: binary()}).
 
 -record(media_info,
-	{type   :: atom(),
+	{path   :: binary(),
+	 type   :: atom(),
 	 height :: integer(),
 	 width  :: integer()}).
 
@@ -387,7 +388,7 @@ process(LocalPath, #request{method = Method, host = Host, ip = IP})
 process(_LocalPath, #request{method = 'PUT', host = Host, ip = IP,
 			     length = Length} = Request) ->
     {Proc, Slot} = parse_http_request(Request),
-    case catch gen_server:call(Proc, {use_slot, Slot, Length}, ?CALL_TIMEOUT) of
+    try gen_server:call(Proc, {use_slot, Slot, Length}, ?CALL_TIMEOUT) of
 	{ok, Path, FileMode, DirMode, GetPrefix, Thumbnail, CustomHeaders} ->
 	    ?DEBUG("Storing file from ~s for ~s: ~s",
 		   [encode_addr(IP), Host, Path]),
@@ -413,8 +414,14 @@ process(_LocalPath, #request{method = 'PUT', host = Host, ip = IP,
 	{error, invalid_slot} ->
 	    ?WARNING_MSG("Rejecting file ~s from ~s for ~s: Invalid slot",
 		      [lists:last(Slot), encode_addr(IP), Host]),
-	    http_response(403);
-	Error ->
+	    http_response(403)
+    catch
+	exit:{noproc, _} ->
+	    ?WARNING_MSG("Cannot handle PUT request from ~s for ~s: "
+			 "Upload not configured for this host",
+			 [encode_addr(IP), Host]),
+	    http_response(404);
+	_:Error ->
 	    ?ERROR_MSG("Cannot handle PUT request from ~s for ~s: ~p",
 		       [encode_addr(IP), Host, Error]),
 	    http_response(500)
@@ -423,7 +430,7 @@ process(_LocalPath, #request{method = Method, host = Host, ip = IP} = Request)
     when Method == 'GET';
 	 Method == 'HEAD' ->
     {Proc, [_UserDir, _RandDir, FileName] = Slot} = parse_http_request(Request),
-    case catch gen_server:call(Proc, get_conf, ?CALL_TIMEOUT) of
+    try gen_server:call(Proc, get_conf, ?CALL_TIMEOUT) of
 	{ok, DocRoot, CustomHeaders} ->
 	    Path = str:join([DocRoot | Slot], <<$/>>),
 	    case file:open(Path, [read]) of
@@ -458,8 +465,14 @@ process(_LocalPath, #request{method = Method, host = Host, ip = IP} = Request)
 		    ?WARNING_MSG("Cannot serve ~s to ~s: ~s",
 			      [Path, encode_addr(IP), format_error(Error)]),
 		    http_response(500)
-	    end;
-	Error ->
+	    end
+    catch
+	exit:{noproc, _} ->
+	    ?WARNING_MSG("Cannot handle ~s request from ~s for ~s: "
+			 "Upload not configured for this host",
+			 [Method, encode_addr(IP), Host]),
+	    http_response(404);
+	_:Error ->
 	    ?ERROR_MSG("Cannot handle ~s request from ~s for ~s: ~p",
 		       [Method, encode_addr(IP), Host, Error]),
 	    http_response(500)
@@ -469,11 +482,17 @@ process(_LocalPath, #request{method = 'OPTIONS', host = Host,
     ?DEBUG("Responding to OPTIONS request from ~s for ~s",
 	   [encode_addr(IP), Host]),
     {Proc, _Slot} = parse_http_request(Request),
-    case catch gen_server:call(Proc, get_conf, ?CALL_TIMEOUT) of
+    try gen_server:call(Proc, get_conf, ?CALL_TIMEOUT) of
 	{ok, _DocRoot, CustomHeaders} ->
 	    AllowHeader = {<<"Allow">>, <<"OPTIONS, HEAD, GET, PUT">>},
-	    http_response(200, [AllowHeader | CustomHeaders]);
-	Error ->
+	    http_response(200, [AllowHeader | CustomHeaders])
+    catch
+	exit:{noproc, _} ->
+	    ?WARNING_MSG("Cannot handle OPTIONS request from ~s for ~s: "
+			 "Upload not configured for this host",
+			 [encode_addr(IP), Host]),
+	    http_response(404);
+	_:Error ->
 	    ?ERROR_MSG("Cannot handle OPTIONS request from ~s for ~s: ~p",
 		       [encode_addr(IP), Host, Error]),
 	    http_response(500)
@@ -489,9 +508,12 @@ process(_LocalPath, #request{method = Method, host = Host, ip = IP}) ->
 -spec get_proc_name(binary(), atom()) -> atom().
 get_proc_name(ServerHost, ModuleName) ->
     PutURL = gen_mod:get_module_opt(ServerHost, ?MODULE, put_url),
-    {ok, {_Scheme, _UserInfo, Host, _Port, Path, _Query}} =
+    %% Once we depend on OTP >= 20.0, we can use binaries with http_uri.
+    {ok, {_Scheme, _UserInfo, Host0, _Port, Path0, _Query}} =
 	http_uri:parse(binary_to_list(expand_host(PutURL, ServerHost))),
-    ProcPrefix = list_to_binary(string:strip(Host ++ Path, right, $/)),
+    Host = jid:nameprep(iolist_to_binary(Host0)),
+    Path = str:strip(iolist_to_binary(Path0), right, $/),
+    ProcPrefix = <<Host/binary, Path/binary>>,
     gen_mod:get_module_proc(ProcPrefix, ModuleName).
 
 -spec expand_home(binary()) -> binary().
@@ -743,7 +765,8 @@ iq_disco_info(Host, Lang, Name, AddInfo) ->
 %% HTTP request handling.
 
 -spec parse_http_request(#request{}) -> {atom(), slot()}.
-parse_http_request(#request{host = Host, path = Path}) ->
+parse_http_request(#request{host = Host0, path = Path}) ->
+    Host = jid:nameprep(Host0),
     PrefixLength = length(Path) - 3,
     {ProcURL, Slot} = if PrefixLength > 0 ->
 			      Prefix = lists:sublist(Path, PrefixLength),
@@ -762,10 +785,10 @@ parse_http_request(#request{host = Host, path = Path}) ->
 store_file(Path, Request, FileMode, DirMode, GetPrefix, Slot, Thumbnail) ->
     case do_store_file(Path, Request, FileMode, DirMode) of
 	ok when Thumbnail ->
-	    case identify(Path) of
-		{ok, MediaInfo} ->
-		    case convert(Path, MediaInfo) of
-			{ok, OutPath, OutMediaInfo} ->
+	    case read_image(Path) of
+		{ok, Data, MediaInfo} ->
+		    case convert(Data, MediaInfo) of
+			{ok, #media_info{path = OutPath} = OutMediaInfo} ->
 			    [UserDir, RandDir | _] = Slot,
 			    FileName = filename:basename(OutPath),
 			    URL = str:join([GetPrefix, UserDir,
@@ -810,8 +833,6 @@ do_store_file(Path, Request, FileMode, DirMode) ->
 	end
     catch
 	_:{badmatch, {error, Error}} ->
-	    {error, Error};
-	_:Error ->
 	    {error, Error}
     end.
 
@@ -870,30 +891,31 @@ format_error(Reason) ->
 %%--------------------------------------------------------------------
 %% Image manipulation stuff.
 %%--------------------------------------------------------------------
--spec identify(binary()) -> {ok, media_info()} | pass.
-identify(Path) ->
-    try
-	{ok, Fd} = file:open(Path, [read, raw]),
-	{ok, Data} = file:read(Fd, 1024),
-	case eimp:identify(Data) of
-	    {ok, Info} ->
-		{ok, #media_info{
+-spec read_image(binary()) -> {ok, binary(), media_info()} | pass.
+read_image(Path) ->
+    case file:read_file(Path) of
+	{ok, Data} ->
+	    case eimp:identify(Data) of
+		{ok, Info} ->
+		    {ok, Data,
+		     #media_info{
+			path = Path,
 			type = proplists:get_value(type, Info),
 			width = proplists:get_value(width, Info),
 			height = proplists:get_value(height, Info)}};
-	    {error, Why} ->
-		?DEBUG("Cannot identify type of ~s: ~s",
-		       [Path, eimp:format_error(Why)]),
-		pass
-	end
-    catch _:{badmatch, {error, Reason}} ->
+		{error, Why} ->
+		    ?DEBUG("Cannot identify type of ~s: ~s",
+			   [Path, eimp:format_error(Why)]),
+		    pass
+	    end;
+	{error, Reason} ->
 	    ?DEBUG("Failed to read file ~s: ~s",
 		   [Path, format_error(Reason)]),
 	    pass
     end.
 
 -spec convert(binary(), media_info()) -> {ok, binary(), media_info()} | pass.
-convert(Path, #media_info{type = T, width = W, height = H} = Info) ->
+convert(InData, #media_info{path = Path, type = T, width = W, height = H} = Info) ->
     if W * H >= 25000000 ->
 	    ?DEBUG("The image ~s is more than 25 Mpix", [Path]),
 	    pass;
@@ -908,27 +930,20 @@ convert(Path, #media_info{type = T, width = W, height = H} = Info) ->
 			  H > W -> {round(W*300/H), 300};
 			  true -> {300, 300}
 		       end,
-	    OutInfo = #media_info{type = T, width = W1, height = H1},
-	    case file:read_file(Path) of
-		{ok, Data} ->
-		    case eimp:convert(Data, T, [{scale, {W1, H1}}]) of
-			{ok, OutData} ->
-			    case file:write_file(OutPath, OutData) of
-				ok ->
-				    {ok, OutPath, OutInfo};
-				{error, Why} ->
-				    ?ERROR_MSG("Failed to write to ~s: ~s",
-					       [OutPath, format_error(Why)]),
-				    pass
-			    end;
+	    OutInfo = #media_info{path = OutPath, type = T, width = W1, height = H1},
+	    case eimp:convert(InData, T, [{scale, {W1, H1}}]) of
+		{ok, OutData} ->
+		    case file:write_file(OutPath, OutData) of
+			ok ->
+			    {ok, OutInfo};
 			{error, Why} ->
-			    ?ERROR_MSG("Failed to convert ~s to ~s: ~s",
-				       [Path, OutPath, eimp:format_error(Why)]),
+			    ?ERROR_MSG("Failed to write to ~s: ~s",
+				       [OutPath, format_error(Why)]),
 			    pass
 		    end;
 		{error, Why} ->
-		    ?ERROR_MSG("Failed to read file ~s: ~s",
-			       [Path, format_error(Why)]),
+		    ?ERROR_MSG("Failed to convert ~s to ~s: ~s",
+			       [Path, OutPath, eimp:format_error(Why)]),
 		    pass
 	    end
     end.
@@ -962,9 +977,7 @@ remove_user(User, Server) ->
     end,
     ok.
 
--spec del_tree(file:filename_all()) -> ok | {error, term()}.
-del_tree(Dir) when is_binary(Dir) ->
-    del_tree(binary_to_list(Dir));
+-spec del_tree(file:filename_all()) -> ok | {error, file:posix()}.
 del_tree(Dir) ->
     try
 	{ok, Entries} = file:list_dir(Dir),
@@ -975,11 +988,9 @@ del_tree(Dir) ->
 				  false ->
 				      ok = file:delete(Path)
 			      end
-		      end, [Dir ++ "/" ++ Entry || Entry <- Entries]),
+		      end, [filename:join(Dir, Entry) || Entry <- Entries]),
 	ok = file:del_dir(Dir)
     catch
 	_:{badmatch, {error, Error}} ->
-	    {error, Error};
-	_:Error ->
 	    {error, Error}
     end.

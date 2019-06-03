@@ -3,7 +3,7 @@ defmodule Ejabberd.Mixfile do
 
   def project do
     [app: :ejabberd,
-     version: "19.2.0",
+     version: "19.5.0",
      description: description(),
      elixir: "~> 1.4",
      elixirc_paths: ["lib"],
@@ -27,7 +27,7 @@ defmodule Ejabberd.Mixfile do
     [mod: {:ejabberd_app, []},
      applications: [:kernel, :stdlib, :sasl, :ssl],
      included_applications: [:lager, :mnesia, :inets, :p1_utils, :cache_tab,
-                             :fast_tls, :stringprep, :fast_xml, :xmpp,
+                             :fast_tls, :stringprep, :fast_xml, :xmpp, :mqtree,
                              :stun, :fast_yaml, :esip, :jiffy, :p1_oauth2,
                              :eimp, :base64url, :jose, :pkix, :os_mon]
      ++ cond_apps()]
@@ -62,7 +62,11 @@ defmodule Ejabberd.Mixfile do
   end
 
   defp cond_options do
-    for {:true, option} <- [{config(:graphics), {:d, :GRAPHICS}}], do:
+    for {:true, option} <- [{config(:sip), {:d, :SIP}},
+                            {config(:stun), {:d, :STUN}},
+                            {config(:roster_gateway_workaround), {:d, :ROSTER_GATWAY_WORKAROUND}},
+                            {config(:new_sql_schema), {:d, :NEW_SQL_SCHEMA}}
+                           ], do:
     option
   end
 
@@ -92,9 +96,13 @@ defmodule Ejabberd.Mixfile do
   end
 
   defp deps_include(deps) do
-    base = case Mix.Project.deps_paths()[:ejabberd] do
-      nil -> "deps"
-      _ -> ".."
+    base = if Mix.Project.umbrella?() do
+      "../../deps"
+    else
+      case Mix.Project.deps_paths()[:ejabberd] do
+        nil -> "deps"
+        _ -> ".."
+      end
     end
     Enum.map(deps, fn dep -> base<>"/#{dep}/include" end)
   end

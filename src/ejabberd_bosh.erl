@@ -284,7 +284,7 @@ init([#body{attrs = Attrs}, IP, SID]) ->
                                     buf_new(XMPPDomain)),
                              Opts2}
 		    end,
-    case ejabberd_c2s:start({?MODULE, Socket}, [{receiver, self()}|Opts]) of
+    case ejabberd_c2s:start(?MODULE, Socket, [{receiver, self()}|Opts]) of
 	{ok, C2SPid} ->
 	    ejabberd_c2s:accept(C2SPid),
 	    Inactivity = gen_mod:get_module_opt(XMPPDomain,
@@ -324,10 +324,10 @@ wait_for_session(#body{attrs = Attrs} = Req, From,
     NewKey = get_attr(newkey, Attrs),
     Type = get_attr(type, Attrs),
     Requests = Hold + 1,
-    {PollTime, Polling} = if Wait == 0, Hold == 0 ->
-				 {p1_time_compat:timestamp(), [{polling, ?DEFAULT_POLLING}]};
-			     true -> {undefined, []}
-			  end,
+    PollTime = if
+		   Wait == 0, Hold == 0 -> erlang:timestamp();
+		   true -> undefined
+	       end,
     MaxPause = gen_mod:get_module_opt(State#state.host,
 				      mod_bosh, max_pause),
     Resp = #body{attrs =
@@ -337,8 +337,7 @@ wait_for_session(#body{attrs = Attrs} = Req, From,
 		      {hold, Hold}, {'xmpp:restartlogic', true},
 		      {requests, Requests}, {secure, true},
 		      {maxpause, MaxPause}, {'xmlns:xmpp', ?NS_BOSH},
-		      {'xmlns:stream', ?NS_STREAM}, {from, State#state.host}
-		      | Polling]},
+		      {'xmlns:stream', ?NS_STREAM}, {from, State#state.host}]},
     {ShaperState, _} =
 	ejabberd_shaper:update(State#state.shaper_state, Req#body.size),
     State1 = State#state{wait_timeout = Wait,
@@ -479,7 +478,7 @@ active1(#body{attrs = Attrs} = Req, From, State) ->
 	   Pause = get_attr(pause, Attrs, undefined),
 	   NewPoll = case State#state.prev_poll of
 		       undefined -> undefined;
-		       _ -> p1_time_compat:timestamp()
+		       _ -> erlang:timestamp()
 		     end,
 	   State5 = State4#state{prev_poll = NewPoll,
 				 prev_key = NewKey},
@@ -736,7 +735,7 @@ is_valid_key(PrevKey, Key) ->
 
 is_overactivity(undefined) -> false;
 is_overactivity(PrevPoll) ->
-    PollPeriod = timer:now_diff(p1_time_compat:timestamp(), PrevPoll) div
+    PollPeriod = timer:now_diff(erlang:timestamp(), PrevPoll) div
 		   1000000,
     if PollPeriod < (?DEFAULT_POLLING) -> true;
        true -> false

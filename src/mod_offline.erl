@@ -82,6 +82,8 @@
 %% default value for the maximum number of user messages
 -define(MAX_USER_MESSAGES, infinity).
 
+-define(EMPTY_SPOOL_CACHE, offline_empty_cache).
+
 -type c2s_state() :: ejabberd_c2s:state().
 
 -callback init(binary(), gen_mod:opts()) -> any().
@@ -109,6 +111,7 @@ depends(_Host, _Opts) ->
 start(Host, Opts) ->
     Mod = gen_mod:db_mod(Host, Opts, ?MODULE),
     Mod:init(Host, Opts),
+    init_cache(Opts),
     ejabberd_hooks:add(offline_message_hook, Host, ?MODULE,
 		       store_packet, 50),
     ejabberd_hooks:add(c2s_self_presence, Host, ?MODULE, c2s_self_presence, 50),
@@ -158,24 +161,59 @@ stop(Host) ->
 reload(Host, NewOpts, OldOpts) ->
     NewMod = gen_mod:db_mod(Host, NewOpts, ?MODULE),
     OldMod = gen_mod:db_mod(Host, OldOpts, ?MODULE),
+    init_cache(NewOpts),
     if NewMod /= OldMod ->
 	    NewMod:init(Host, NewOpts);
        true ->
 	    ok
     end.
 
+init_cache(Opts) ->
+    case gen_mod:get_opt(use_mam_for_storage, Opts) of
+        true ->
+	    MaxSize = gen_mod:get_opt(cache_size, Opts),
+	    LifeTime = case gen_mod:get_opt(cache_life_time, Opts) of
+			   infinity -> infinity;
+			   I -> timer:seconds(I)
+		       end,
+	    COpts = [{max_size, MaxSize}, {cache_missed, false}, {life_time, LifeTime}],
+            ets_cache:new(?EMPTY_SPOOL_CACHE, COpts);
+        false ->
+            ets_cache:delete(?EMPTY_SPOOL_CACHE)
+    end.
+
 -spec store_offline_msg(#offline_msg{}) -> ok | {error, full | any()}.
-store_offline_msg(#offline_msg{us = {User, Server}} = Msg) ->
-    Mod = gen_mod:db_mod(Server, ?MODULE),
-    case get_max_user_messages(User, Server) of
-	infinity ->
-	    Mod:store_message(Msg);
-	Limit ->
-	    Num = count_offline_messages(User, Server),
-	    if Num < Limit ->
+store_offline_msg(#offline_msg{us = {User, Server}, packet = Pkt} = Msg) ->
+    UseMam = use_mam_for_user(User, Server),
+    case UseMam andalso xmpp:get_meta(Pkt, mam_archived, false) of
+	true ->
+	    Mod = gen_mod:db_mod(Server, ?MODULE),
+	    ets_cache:lookup(?EMPTY_SPOOL_CACHE, {User, Server},
+		fun() ->
+		    case count_messages_in_db(User, Server) of
+			0 ->
+			    case Mod:store_message(Msg) of
+				ok ->
+				    {cache, ok};
+				Err ->
+				    {nocache, Err}
+			    end;
+			_ ->
+			    {cache, ok}
+		    end
+		end);
+	false ->
+	    Mod = gen_mod:db_mod(Server, ?MODULE),
+	    case get_max_user_messages(User, Server) of
+		infinity ->
 		    Mod:store_message(Msg);
-	       true ->
-		    {error, full}
+		Limit ->
+		    Num = count_messages_in_db(User, Server),
+		    if Num < Limit ->
+			Mod:store_message(Msg);
+			true ->
+			    {error, full}
+		    end
 	    end
     end.
 
@@ -298,34 +336,44 @@ handle_offline_query(#iq{lang = Lang} = IQ) ->
 -spec handle_offline_items_view(jid(), [offline_item()]) -> boolean().
 handle_offline_items_view(JID, Items) ->
     {U, S, R} = jid:tolower(JID),
-    lists:foldl(
-      fun(#offline_item{node = Node, action = view}, Acc) ->
-	      case fetch_msg_by_node(JID, Node) of
-		  {ok, OfflineMsg} ->
-		      case offline_msg_to_route(S, OfflineMsg) of
-			  {route, El} ->
-			      NewEl = set_offline_tag(El, Node),
-			      case ejabberd_sm:get_session_pid(U, S, R) of
-				  Pid when is_pid(Pid) ->
-				      Pid ! {route, NewEl};
-				  none ->
-				      ok
-			      end,
-			      Acc or true;
-			  error ->
-			      Acc or false
-		      end;
-		  error ->
-		      Acc or false
-	      end
-      end, false, Items).
+    case use_mam_for_user(U, S) of
+	true ->
+	    false;
+	_ ->
+	    lists:foldl(
+		fun(#offline_item{node = Node, action = view}, Acc) ->
+		    case fetch_msg_by_node(JID, Node) of
+			{ok, OfflineMsg} ->
+			    case offline_msg_to_route(S, OfflineMsg) of
+				{route, El} ->
+				    NewEl = set_offline_tag(El, Node),
+				    case ejabberd_sm:get_session_pid(U, S, R) of
+					Pid when is_pid(Pid) ->
+					    Pid ! {route, NewEl};
+					none ->
+					    ok
+				    end,
+				    Acc or true;
+				error ->
+				    Acc or false
+			    end;
+			error ->
+			    Acc or false
+		    end
+		end, false, Items)    end.
 
 -spec handle_offline_items_remove(jid(), [offline_item()]) -> boolean().
 handle_offline_items_remove(JID, Items) ->
-    lists:foldl(
-      fun(#offline_item{node = Node, action = remove}, Acc) ->
-	      Acc or remove_msg_by_node(JID, Node)
-      end, false, Items).
+    {U, S, _R} = jid:tolower(JID),
+    case use_mam_for_user(U, S) of
+	true ->
+	    false;
+	_ ->
+	    lists:foldl(
+		fun(#offline_item{node = Node, action = remove}, Acc) ->
+		    Acc or remove_msg_by_node(JID, Node)
+		end, false, Items)
+    end.
 
 -spec set_offline_tag(message(), binary()) -> message().
 set_offline_tag(Msg, Node) ->
@@ -334,11 +382,11 @@ set_offline_tag(Msg, Node) ->
 -spec handle_offline_fetch(jid()) -> ok.
 handle_offline_fetch(#jid{luser = U, lserver = S} = JID) ->
     ejabberd_sm:route(JID, {resend_offline, false}),
-	    lists:foreach(
-	      fun({Node, El}) ->
-	      El1 = set_offline_tag(El, Node),
-	      ejabberd_router:route(El1)
-      end, read_messages(U, S)).
+    lists:foreach(
+	fun({Node, El}) ->
+	    El1 = set_offline_tag(El, Node),
+	    ejabberd_router:route(El1)
+	end, read_messages(U, S)).
 
 -spec fetch_msg_by_node(jid(), binary()) -> error | {ok, #offline_msg{}}.
 fetch_msg_by_node(To, Seq) ->
@@ -370,31 +418,38 @@ need_to_store(_LServer, #message{type = error}) -> false;
 need_to_store(LServer, #message{type = Type} = Packet) ->
     case xmpp:has_subtag(Packet, #offline{}) of
 	false ->
-	    case check_store_hint(Packet) of
-		store ->
-		    true;
-		no_store ->
-		    false;
-		none ->
-		    Store = case Type of
-				groupchat ->
-				    gen_mod:get_module_opt(
-				      LServer, ?MODULE, store_groupchat);
-				headline ->
-				    false;
-				_ ->
-				    true
-			    end,
-		    case {Store, gen_mod:get_module_opt(
-				   LServer, ?MODULE, store_empty_body)} of
-			{false, _} ->
-			    false;
-			{_, true} ->
+	    case misc:unwrap_mucsub_message(Packet) of
+		#message{type = groupchat} = Msg ->
+		    need_to_store(LServer, Msg#message{type = chat});
+		#message{} = Msg ->
+		    need_to_store(LServer, Msg);
+		_ ->
+		    case check_store_hint(Packet) of
+			store ->
 			    true;
-			{_, false} ->
-			    Packet#message.body /= [];
-			{_, unless_chat_state} ->
-			    not misc:is_standalone_chat_state(Packet)
+			no_store ->
+			    false;
+			none ->
+			    Store = case Type of
+					groupchat ->
+					    gen_mod:get_module_opt(
+						LServer, ?MODULE, store_groupchat);
+					headline ->
+					    false;
+					_ ->
+					    true
+				    end,
+			    case {Store, gen_mod:get_module_opt(
+				LServer, ?MODULE, store_empty_body)} of
+				{false, _} ->
+				    false;
+				{_, true} ->
+				    true;
+				{_, false} ->
+				    Packet#message.body /= [];
+				{_, unless_chat_state} ->
+				    not misc:is_standalone_chat_state(Packet)
+			    end
 		    end
 	    end;
 	true ->
@@ -413,7 +468,7 @@ store_packet({_Action, #message{from = From, to = To} = Packet} = Acc) ->
 			drop ->
 			    Acc;
 			NewPacket ->
-			    TimeStamp = p1_time_compat:timestamp(),
+			    TimeStamp = erlang:timestamp(),
 			    Expire = find_x_expire(TimeStamp, NewPacket),
 			    OffMsg = #offline_msg{us = {LUser, LServer},
 						  timestamp = TimeStamp,
@@ -508,15 +563,28 @@ c2s_self_presence(Acc) ->
 -spec route_offline_messages(c2s_state()) -> ok.
 route_offline_messages(#{jid := #jid{luser = LUser, lserver = LServer}} = State) ->
     Mod = gen_mod:db_mod(LServer, ?MODULE),
-    case Mod:pop_messages(LUser, LServer) of
-	{ok, OffMsgs} ->
-	    lists:foreach(
-	      fun(OffMsg) ->
-		      route_offline_message(State, OffMsg)
-	      end, OffMsgs);
-	_ ->
-	    ok
-    end.
+    Msgs = case Mod:pop_messages(LUser, LServer) of
+	       {ok, OffMsgs} ->
+		   case use_mam_for_user(LUser, LServer) of
+		       true ->
+			   ets_cache:delete(?EMPTY_SPOOL_CACHE, {LUser, LServer},
+					    ejabberd_cluster:get_nodes()),
+			   lists:map(
+			       fun({_, #message{from = From, to = To} = Msg}) ->
+				   #offline_msg{from = From, to = To,
+						us = {LUser, LServer},
+						packet = Msg}
+			       end, read_mam_messages(LUser, LServer, OffMsgs));
+		       _ ->
+			   OffMsgs
+		   end;
+	       _ ->
+		   []
+	   end,
+    lists:foreach(
+	fun(OffMsg) ->
+	    route_offline_message(State, OffMsg)
+	end, Msgs).
 
 -spec route_offline_message(c2s_state(), #offline_msg{}) -> ok.
 route_offline_message(#{lserver := LServer} = State,
@@ -538,7 +606,7 @@ route_offline_message(#{lserver := LServer} = State,
 
 -spec is_message_expired(erlang:timestamp() | never, message()) -> boolean().
 is_message_expired(Expire, Msg) ->
-    TS = p1_time_compat:timestamp(),
+    TS = erlang:timestamp(),
     Expire1 = case Expire of
 		  undefined -> find_x_expire(TS, Msg);
 		  _ -> Expire
@@ -576,19 +644,42 @@ remove_user(User, Server) ->
 
 %% Helper functions:
 
+-spec check_if_message_should_be_bounced(message()) -> boolean().
+check_if_message_should_be_bounced(Packet) ->
+    case Packet of
+	#message{type = groupchat, to = #jid{lserver = LServer}} ->
+	    gen_mod:get_module_opt(LServer, ?MODULE, bounce_groupchat);
+	#message{to = #jid{lserver = LServer}} ->
+	    case misc:is_mucsub_message(Packet) of
+		true ->
+		    gen_mod:get_module_opt(LServer, ?MODULE, bounce_groupchat);
+		_ ->
+		    true
+	    end;
+	_ ->
+	    true
+    end.
+
 %% Warn senders that their messages have been discarded:
+
 -spec discard_warn_sender(message(), full | any()) -> ok.
-discard_warn_sender(Packet, full) ->
-    ErrText = <<"Your contact offline message queue is "
-		"full. The message has been discarded.">>,
-    Lang = xmpp:get_lang(Packet),
-    Err = xmpp:err_resource_constraint(ErrText, Lang),
-    ejabberd_router:route_error(Packet, Err);
-discard_warn_sender(Packet, _) ->
-    ErrText = <<"Database failure">>,
-    Lang = xmpp:get_lang(Packet),
-    Err = xmpp:err_internal_server_error(ErrText, Lang),
-    ejabberd_router:route_error(Packet, Err).
+discard_warn_sender(Packet, Reason) ->
+    case check_if_message_should_be_bounced(Packet) of
+	true ->
+	    Lang = xmpp:get_lang(Packet),
+	    Err = case Reason of
+		      full ->
+			  ErrText = <<"Your contact offline message queue is "
+				      "full. The message has been discarded.">>,
+			  xmpp:err_resource_constraint(ErrText, Lang);
+		      _ ->
+			  ErrText = <<"Database failure">>,
+			  xmpp:err_internal_server_error(ErrText, Lang)
+		  end,
+	    ejabberd_router:route_error(Packet, Err);
+	_ ->
+	    ok
+    end.
 
 webadmin_page(_, Host,
 	      #request{us = _US, path = [<<"user">>, U, <<"queue">>],
@@ -618,25 +709,172 @@ offline_msg_to_route(LServer, #offline_msg{from = From, to = To} = R) ->
 
 -spec read_messages(binary(), binary()) -> [{binary(), message()}].
 read_messages(LUser, LServer) ->
+    Res = read_db_messages(LUser, LServer),
+    case use_mam_for_user(LUser, LServer) of
+	true ->
+	    read_mam_messages(LUser, LServer, Res);
+	_ ->
+	    Res
+    end.
+
+-spec read_db_messages(binary(), binary()) -> [{binary(), message()}].
+read_db_messages(LUser, LServer) ->
     Mod = gen_mod:db_mod(LServer, ?MODULE),
     CodecOpts = ejabberd_config:codec_options(LServer),
     lists:flatmap(
-      fun({Seq, From, To, TS, El}) ->
-	      Node = integer_to_binary(Seq),
-	      try xmpp:decode(El, ?NS_CLIENT, CodecOpts) of
-		  Pkt ->
-		      Node = integer_to_binary(Seq),
-		      Pkt1 = add_delay_info(Pkt, LServer, TS),
-		      Pkt2 = xmpp:set_from_to(Pkt1, From, To),
-		      [{Node, Pkt2}]
-	      catch _:{xmpp_codec, Why} ->
-		      ?ERROR_MSG("failed to decode packet ~p "
-				 "of user ~s: ~s",
-				 [El, jid:encode(To),
-				  xmpp:format_error(Why)]),
-		      []
-	      end
-      end, Mod:read_message_headers(LUser, LServer)).
+	fun({Seq, From, To, TS, El}) ->
+	    Node = integer_to_binary(Seq),
+	    try xmpp:decode(El, ?NS_CLIENT, CodecOpts) of
+		Pkt ->
+		    Node = integer_to_binary(Seq),
+		    Pkt1 = add_delay_info(Pkt, LServer, TS),
+		    Pkt2 = xmpp:set_from_to(Pkt1, From, To),
+		    [{Node, Pkt2}]
+	    catch _:{xmpp_codec, Why} ->
+		?ERROR_MSG("failed to decode packet ~p "
+			   "of user ~s: ~s",
+			   [El, jid:encode(To),
+			    xmpp:format_error(Why)]),
+		[]
+	    end
+	end, Mod:read_message_headers(LUser, LServer)).
+
+-spec parse_marker_messages(binary(), [#offline_msg{} | {any(), message()}]) ->
+    {integer() | none, [message()]}.
+parse_marker_messages(LServer, ReadMsgs) ->
+    {Timestamp, ExtraMsgs} = lists:foldl(
+	fun({_Node, #message{id = <<"ActivityMarker">>,
+			     body = [], type = error} = Msg}, {T, E}) ->
+	    case xmpp:get_subtag(Msg, #delay{}) of
+		#delay{stamp = Time} ->
+		    if T == none orelse T > Time ->
+			{Time, E};
+			true ->
+			    {T, E}
+		    end
+	    end;
+	   (#offline_msg{from = From, to = To, timestamp = TS, packet = Pkt},
+	    {T, E}) ->
+	       try xmpp:decode(Pkt) of
+		   #message{id = <<"ActivityMarker">>,
+			    body = [], type = error} = Msg ->
+		       TS2 = case TS of
+				 undefined ->
+				     case xmpp:get_subtag(Msg, #delay{}) of
+					 #delay{stamp = TS0} ->
+					     TS0;
+					 _ ->
+					     erlang:timestamp()
+				     end;
+				 _ ->
+				     TS
+			     end,
+		       if T == none orelse T > TS2 ->
+			   {TS2, E};
+			   true ->
+			       {T, E}
+		       end;
+		   Decoded ->
+		       Pkt1 = add_delay_info(Decoded, LServer, TS),
+		       {T, [xmpp:set_from_to(Pkt1, From, To) | E]}
+	       catch _:{xmpp_codec, _Why} ->
+		   {T, E}
+	       end;
+	   ({_Node, Msg}, {T, E}) ->
+	       {T, [Msg | E]}
+	end, {none, []}, ReadMsgs),
+    Start = case {Timestamp, ExtraMsgs} of
+		{none, [First|_]} ->
+		    case xmpp:get_subtag(First, #delay{}) of
+			#delay{stamp = {Mega, Sec, Micro}} ->
+			    {Mega, Sec, Micro+1};
+			_ ->
+			    none
+		    end;
+		{none, _} ->
+		    none;
+		_ ->
+		    Timestamp
+	    end,
+    {Start, ExtraMsgs}.
+
+-spec read_mam_messages(binary(), binary(), [#offline_msg{} | {any(), message()}]) ->
+    [{integer(), message()}].
+read_mam_messages(LUser, LServer, ReadMsgs) ->
+    {Start, ExtraMsgs} = parse_marker_messages(LServer, ReadMsgs),
+    AllMsgs = case Start of
+		  none ->
+		      ExtraMsgs;
+		  _ ->
+		      MaxOfflineMsgs = case get_max_user_messages(LUser, LServer) of
+					   Number when is_integer(Number) -> Number - length(ExtraMsgs);
+					   infinity -> undefined;
+					   _ -> 100 - length(ExtraMsgs)
+				       end,
+		      JID = jid:make(LUser, LServer, <<>>),
+		      {MamMsgs, _, _} = mod_mam:select(LServer, JID, JID,
+						       [{start, Start}],
+						       #rsm_set{max = MaxOfflineMsgs,
+								before = <<"9999999999999999">>},
+						       chat, only_messages),
+		      MamMsgs2 = lists:map(
+			  fun({_, _, #forwarded{sub_els = [MM | _], delay = #delay{stamp = MMT}}}) ->
+			      add_delay_info(MM, LServer, MMT)
+			  end, MamMsgs),
+
+		      ExtraMsgs ++ MamMsgs2
+	      end,
+    AllMsgs2 = lists:sort(
+	fun(A, B) ->
+	    DA = case xmpp:get_subtag(A, #stanza_id{}) of
+		     #stanza_id{id = IDA} ->
+			 IDA;
+		     _ -> case xmpp:get_subtag(A, #delay{}) of
+			      #delay{stamp = STA} ->
+				  integer_to_binary(misc:now_to_usec(STA));
+			      _ ->
+				  <<"unknown">>
+			  end
+		 end,
+	    DB = case xmpp:get_subtag(B, #stanza_id{}) of
+		     #stanza_id{id = IDB} ->
+			 IDB;
+		     _ -> case xmpp:get_subtag(B, #delay{}) of
+			      #delay{stamp = STB} ->
+				  integer_to_binary(misc:now_to_usec(STB));
+			      _ ->
+				  <<"unknown">>
+			  end
+		 end,
+	    DA < DB
+	end, AllMsgs),
+    {AllMsgs3, _} = lists:mapfoldl(
+	fun(Msg, Counter) ->
+	    {{Counter, Msg}, Counter + 1}
+	end, 1, AllMsgs2),
+    AllMsgs3.
+
+-spec count_mam_messages(binary(), binary(), [#offline_msg{} | {any(), message()}]) ->
+    integer().
+count_mam_messages(LUser, LServer, ReadMsgs) ->
+    {Start, ExtraMsgs} = parse_marker_messages(LServer, ReadMsgs),
+    case Start of
+	none ->
+	    length(ExtraMsgs);
+	_ ->
+	    MaxOfflineMsgs = case get_max_user_messages(LUser, LServer) of
+				 Number when is_integer(Number) -> Number - length(ExtraMsgs);
+				 infinity -> undefined;
+				 _ -> 100 - length(ExtraMsgs)
+			     end,
+	    JID = jid:make(LUser, LServer, <<>>),
+	    {_, _, Count} = mod_mam:select(LServer, JID, JID,
+					   [{start, Start}],
+					   #rsm_set{max = MaxOfflineMsgs,
+						    before = <<"9999999999999999">>},
+					   chat, only_count),
+	    Count + length(ExtraMsgs)
+    end.
 
 format_user_queue(Hdrs) ->
     lists:map(
@@ -800,6 +1038,16 @@ webadmin_user_parse_query(Acc, _Action, _User, _Server,
 count_offline_messages(User, Server) ->
     LUser = jid:nodeprep(User),
     LServer = jid:nameprep(Server),
+    case use_mam_for_user(User, Server) of
+	true ->
+	    Res = read_db_messages(LUser, LServer),
+	    count_mam_messages(LUser, LServer, Res);
+	_ ->
+	    count_messages_in_db(LUser, LServer)
+    end.
+
+-spec count_messages_in_db(binary(), binary()) -> non_neg_integer().
+count_messages_in_db(LUser, LServer) ->
     Mod = gen_mod:db_mod(LServer, ?MODULE),
     Mod:count_messages(LUser, LServer).
 
@@ -807,7 +1055,7 @@ count_offline_messages(User, Server) ->
 		     undefined | erlang:timestamp()) -> message().
 add_delay_info(Packet, LServer, TS) ->
     NewTS = case TS of
-		undefined -> p1_time_compat:timestamp();
+		undefined -> erlang:timestamp();
 		_ -> TS
 	    end,
     Packet1 = xmpp:put_meta(Packet, from_offline, true),
@@ -840,7 +1088,7 @@ import(LServer, {sql, _}, DBType, <<"spool">>,
 	     #delay{stamp = {MegaSecs, Secs, _}} ->
 		 {MegaSecs, Secs, 0};
 	     false ->
-		 p1_time_compat:timestamp()
+		 erlang:timestamp()
 	 end,
     US = {LUser, LServer},
     Expire = find_x_expire(TS, Msg),
@@ -850,18 +1098,34 @@ import(LServer, {sql, _}, DBType, <<"spool">>,
     Mod = gen_mod:db_mod(DBType, ?MODULE),
     Mod:import(OffMsg).
 
+use_mam_for_user(_User, Server) ->
+    gen_mod:get_module_opt(Server, ?MODULE, use_mam_for_storage).
+
 mod_opt_type(access_max_user_messages) ->
     fun acl:shaper_rules_validator/1;
 mod_opt_type(db_type) -> fun(T) -> ejabberd_config:v_db(?MODULE, T) end;
 mod_opt_type(store_groupchat) ->
     fun(V) when is_boolean(V) -> V end;
+mod_opt_type(bounce_groupchat) ->
+    fun(V) when is_boolean(V) -> V end;
+mod_opt_type(use_mam_for_storage) ->
+    fun(V) when is_boolean(V) -> V end;
 mod_opt_type(store_empty_body) ->
     fun (V) when is_boolean(V) -> V;
         (unless_chat_state) -> unless_chat_state
+    end;
+mod_opt_type(O) when O == cache_life_time; O == cache_size ->
+    fun (I) when is_integer(I), I > 0 -> I;
+        (infinity) -> infinity
     end.
+
 
 mod_options(Host) ->
     [{db_type, ejabberd_config:default_db(Host, ?MODULE)},
      {access_max_user_messages, max_user_offline_messages},
      {store_empty_body, unless_chat_state},
-     {store_groupchat, false}].
+     {use_mam_for_storage, false},
+     {bounce_groupchat, false},
+     {store_groupchat, false},
+     {cache_size, ejabberd_config:cache_size(Host)},
+     {cache_life_time, ejabberd_config:cache_life_time(Host)}].

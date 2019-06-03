@@ -56,7 +56,8 @@
 	 odbcinst_config/0,
 	 init_mssql/1,
 	 keep_alive/2,
-	 to_list/2]).
+	 to_list/2,
+	 to_array/2]).
 
 %% gen_fsm callbacks
 -export([init/1, handle_event/3, handle_sync_event/4,
@@ -167,7 +168,7 @@ sql_call(Host, Msg) ->
           none -> {error, <<"Unknown Host">>};
           Pid ->
 		sync_send_event(Pid,{sql_cmd, Msg,
-				     p1_time_compat:monotonic_time(milli_seconds)},
+				     erlang:monotonic_time(millisecond)},
 				query_timeout(Host))
           end;
       _State -> nested_op(Msg)
@@ -176,7 +177,7 @@ sql_call(Host, Msg) ->
 keep_alive(Host, PID) ->
     case sync_send_event(PID,
 		    {sql_cmd, {sql_query, ?KEEPALIVE_QUERY},
-		     p1_time_compat:monotonic_time(milli_seconds)},
+		     erlang:monotonic_time(millisecond)},
 		    query_timeout(Host)) of
 	{selected,_,[[<<"1">>]]} ->
 	    ok;
@@ -264,6 +265,10 @@ to_list(EscapeFun, Val) ->
     Escaped = lists:join(<<",">>, lists:map(EscapeFun, Val)),
     [<<"(">>, Escaped, <<")">>].
 
+to_array(EscapeFun, Val) ->
+    Escaped = lists:join(<<",">>, lists:map(EscapeFun, Val)),
+    [<<"{">>, Escaped, <<"}">>].
+
 encode_term(Term) ->
     escape(list_to_binary(
              erl_prettypr:format(erl_syntax:abstract(Term),
@@ -271,9 +276,23 @@ encode_term(Term) ->
 
 decode_term(Bin) ->
     Str = binary_to_list(<<Bin/binary, ".">>),
-    {ok, Tokens, _} = erl_scan:string(Str),
-    {ok, Term} = erl_parse:parse_term(Tokens),
-    Term.
+    try
+	{ok, Tokens, _} = erl_scan:string(Str),
+	{ok, Term} = erl_parse:parse_term(Tokens),
+	Term
+    catch _:{badmatch, {error, {Line, Mod, Reason}, _}} ->
+	    ?ERROR_MSG("Corrupted Erlang term in SQL database:~n"
+		       "** Scanner error: at line ~B: ~s~n"
+		       "** Term: ~s",
+		       [Line, Mod:format_error(Reason), Bin]),
+	    erlang:error(badarg);
+	  _:{badmatch, {error, {Line, Mod, Reason}}} ->
+	    ?ERROR_MSG("Corrupted Erlang term in SQL database:~n"
+		       "** Parser error: at line ~B: ~s~n"
+		       "** Term: ~s",
+		       [Line, Mod:format_error(Reason), Bin]),
+	    erlang:error(badarg)
+    end.
 
 -spec sqlite_db(binary()) -> atom().
 sqlite_db(Host) ->
@@ -450,7 +469,7 @@ print_state(State) -> State.
 
 run_sql_cmd(Command, From, State, Timestamp) ->
     QueryTimeout = query_timeout(State#state.host),
-    case p1_time_compat:monotonic_time(milli_seconds) - Timestamp of
+    case erlang:monotonic_time(millisecond) - Timestamp of
       Age when Age < QueryTimeout ->
 	  put(?NESTING_KEY, ?TOP_LEVEL_TXN),
 	  put(?STATE_KEY, State),
@@ -524,6 +543,7 @@ outer_transaction(F, NRestarts, _Reason) ->
     catch
 	?EX_RULE(throw, {aborted, Reason}, _) when NRestarts > 0 ->
 	    sql_query_internal([<<"rollback;">>]),
+            put(?NESTING_KEY, ?TOP_LEVEL_TXN),
 	    outer_transaction(F, NRestarts - 1, Reason);
 	?EX_RULE(throw, {aborted, Reason}, Stack) when NRestarts =:= 0 ->
 	    ?ERROR_MSG("SQL transaction restarts exceeded~n** "
@@ -610,6 +630,7 @@ sql_query_internal(#sql_query{} = Query) ->
     check_error(Res, Query);
 sql_query_internal(F) when is_function(F) ->
     case catch execute_fun(F) of
+        {aborted, Reason} -> {error, Reason};
         {'EXIT', Reason} -> {error, Reason};
         Res -> Res
     end;
@@ -674,10 +695,11 @@ generic_sql_query_format(SQLQuery) ->
 
 generic_escape() ->
     #sql_escape{string = fun(X) -> <<"'", (escape(X))/binary, "'">> end,
-                integer = fun(X) -> misc:i2l(X) end,
-                boolean = fun(true) -> <<"1">>;
+		integer = fun(X) -> misc:i2l(X) end,
+		boolean = fun(true) -> <<"1">>;
                              (false) -> <<"0">>
-                          end
+                          end,
+		in_array_string = fun(X) -> <<"'", (escape(X))/binary, "'">> end
                }.
 
 sqlite_sql_query(SQLQuery) ->
@@ -691,10 +713,11 @@ sqlite_sql_query_format(SQLQuery) ->
 
 sqlite_escape() ->
     #sql_escape{string = fun(X) -> <<"'", (standard_escape(X))/binary, "'">> end,
-                integer = fun(X) -> misc:i2l(X) end,
-                boolean = fun(true) -> <<"1">>;
+		integer = fun(X) -> misc:i2l(X) end,
+		boolean = fun(true) -> <<"1">>;
                              (false) -> <<"0">>
-                          end
+                          end,
+		in_array_string = fun(X) -> <<"'", (standard_escape(X))/binary, "'">> end
                }.
 
 standard_escape(S) ->
@@ -715,10 +738,11 @@ pgsql_prepare(SQLQuery, State) ->
 
 pgsql_execute_escape() ->
     #sql_escape{string = fun(X) -> X end,
-                integer = fun(X) -> [misc:i2l(X)] end,
-                boolean = fun(true) -> "1";
+		integer = fun(X) -> [misc:i2l(X)] end,
+		boolean = fun(true) -> "1";
                              (false) -> "0"
-                          end
+                          end,
+		in_array_string = fun(X) -> <<"\"", (escape(X))/binary, "\"">> end
                }.
 
 pgsql_execute_sql_query(SQLQuery, State) ->
@@ -965,6 +989,7 @@ get_db_version(State) ->
 log(Level, Format, Args) ->
     case Level of
       debug -> ?DEBUG(Format, Args);
+      info -> ?INFO_MSG(Format, Args);
       normal -> ?INFO_MSG(Format, Args);
       error -> ?ERROR_MSG(Format, Args)
     end.

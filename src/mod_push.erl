@@ -171,7 +171,7 @@ get_commands_spec() ->
 
 -spec delete_old_sessions(non_neg_integer()) -> ok | any().
 delete_old_sessions(Days) ->
-    CurrentTime = p1_time_compat:system_time(micro_seconds),
+    CurrentTime = erlang:system_time(microsecond),
     Diff = Days * 24 * 60 * 60 * 1000000,
     TimeStamp = misc:usec_to_now(CurrentTime - Diff),
     DBTypes = lists:usort(
@@ -708,8 +708,13 @@ get_body_text(#message{body = Body} = Msg) ->
     end.
 
 -spec body_is_encrypted(message()) -> boolean().
-body_is_encrypted(#message{sub_els = SubEls}) ->
-    lists:keyfind(<<"encrypted">>, #xmlel.name, SubEls) /= false.
+body_is_encrypted(#message{sub_els = MsgEls}) ->
+    case lists:keyfind(<<"encrypted">>, #xmlel.name, MsgEls) of
+	#xmlel{children = EncEls} ->
+	    lists:keyfind(<<"payload">>, #xmlel.name, EncEls) /= false;
+	false ->
+	    false
+    end.
 
 -spec get_sender_nickname(message()) -> binary().
 get_sender_nickname(#message{sub_els = SubEls}) ->
