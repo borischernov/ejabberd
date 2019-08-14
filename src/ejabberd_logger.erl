@@ -24,21 +24,21 @@
 %%%-------------------------------------------------------------------
 -module(ejabberd_logger).
 
--behaviour(ejabberd_config).
-
 %% API
 -export([start/0, restart/0, reopen_log/0, rotate_log/0, get/0, set/1,
-	 get_log_path/0, opt_type/1]).
+	 get_log_path/0]).
 
 
 -type loglevel() :: 0 | 1 | 2 | 3 | 4 | 5.
+-type lager_level() :: none | emergency | alert | critical |
+		       error | warning | notice | info | debug.
 
 -spec start() -> ok.
 -spec get_log_path() -> string().
 -spec reopen_log() -> ok.
 -spec rotate_log() -> ok.
 -spec get() -> {loglevel(), atom(), string()}.
--spec set(loglevel() | {loglevel(), list()}) -> {module, module()}.
+-spec set(loglevel()) -> ok.
 
 %%%===================================================================
 %%% API
@@ -63,17 +63,6 @@ get_log_path() ->
 		    Path
 	    end
     end.
-
-opt_type(log_rotate_date) ->
-    fun(S) -> binary_to_list(iolist_to_binary(S)) end;
-opt_type(log_rotate_size) ->
-    fun(I) when is_integer(I), I >= 0 -> I end;
-opt_type(log_rotate_count) ->
-    fun(I) when is_integer(I), I >= 0 -> I end;
-opt_type(log_rate_limit) ->
-    fun(I) when is_integer(I), I >= 0 -> I end;
-opt_type(_) ->
-    [log_rotate_date, log_rotate_size, log_rotate_count, log_rate_limit].
 
 get_integer_env(Name, Default) ->
     case application:get_env(ejabberd, Name) of
@@ -130,6 +119,7 @@ do_start_for_logger(Level) ->
     ejabberd:start_app(lager),
     ok.
 
+-spec do_start_lager_syslog(atom()) -> ok.
 do_start_lager_syslog(Level) ->
     application:load(sasl),
     application:set_env(sasl, sasl_error_logger, false),
@@ -137,7 +127,7 @@ do_start_lager_syslog(Level) ->
     application:load(lager_rsyslog),
     LogRateLimit = get_integer_env(log_rate_limit, 100),
     application:set_env(lager, error_logger_hwm, LogRateLimit),
-    File = filename:dirname(ejabberd_config:get_ejabberd_config_path()) ++ "/logging.conf",
+    File = filename:dirname(binary_to_list(ejabberd_config:path())) ++ "/logging.conf",
     { ok, RawOptions} = file:consult(File),
     RsyslogOptions = case proplists:get_value(lager_rsyslog_options, RawOptions) of
         undefined -> error(bad_lager_rsyslog_options);
@@ -162,7 +152,7 @@ do_start_lager_syslog(Level) ->
     error_logger:info_msg("Lager syslog backend started."),
     ok.
 
-%% Start lager
+-spec do_start(atom()) -> ok.
 do_start(Level) ->
     application:load(sasl),
     application:set_env(sasl, sasl_error_logger, false),
@@ -194,11 +184,10 @@ do_start(Level) ->
     ejabberd:start_app(lager),
     lists:foreach(fun(Handler) ->
 			  lager:set_loghwm(Handler, LogRateLimit)
-		  end, gen_event:which_handlers(lager_event)),
-    ok.
+		  end, gen_event:which_handlers(lager_event)).
 
 restart() ->
-    Level = ejabberd_config:get_option(loglevel, 4),
+    Level = ejabberd_option:loglevel(),
     application:stop(lager),
     start(Level).
 
@@ -231,7 +220,6 @@ get() ->
         debug -> {5, debug, "Debug"}
     end.
 
-%% @spec (loglevel() | {loglevel(), list()}) -> {module, module()}
 set(LogLevel) when is_integer(LogLevel) ->
     LagerLogLevel = get_lager_loglevel(LogLevel),
     case get_lager_loglevel() of
@@ -250,16 +238,12 @@ set(LogLevel) when is_integer(LogLevel) ->
                       lager:set_loglevel(H, LagerLogLevel);
                  (_) ->
                       ok
-              end, gen_event:which_handlers(lager_event))
+              end, get_lager_handlers())
     end,
     case LogLevel of
 	5 -> xmpp:set_config([{debug, true}]);
 	_ -> xmpp:set_config([{debug, false}])
-    end,
-    {module, lager};
-set({_LogLevel, _}) ->
-    error_logger:error_msg("custom loglevels are not supported for 'lager'"),
-    {module, lager}.
+    end.
 
 get_lager_loglevel() ->
     Handlers = get_lager_handlers(),
@@ -272,6 +256,7 @@ get_lager_loglevel() ->
                 end,
                 none, Handlers).
 
+-spec get_lager_loglevel(loglevel()) -> lager_level().
 get_lager_loglevel(LogLevel) ->
     case LogLevel of
 	0 -> none;
@@ -279,8 +264,7 @@ get_lager_loglevel(LogLevel) ->
 	2 -> error;
 	3 -> warning;
 	4 -> info;
-	5 -> debug;
-	E -> erlang:error({wrong_loglevel, E})
+	5 -> debug
     end.
 
 get_lager_handlers() ->
@@ -291,6 +275,7 @@ get_lager_handlers() ->
             Result
     end.
 
+-spec get_lager_version() -> string().
 get_lager_version() ->
     Apps = application:loaded_applications(),
     case lists:keyfind(lager, 1, Apps) of

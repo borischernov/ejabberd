@@ -145,14 +145,9 @@ unsupported_iq(Config) ->
 master_slave_cases(DB) ->
     {offline_master_slave, [sequence],
      [master_slave_test(flex),
-      master_slave_test(send_all)] ++
-	case DB of
-	    riak -> [];
-	    _ -> [
-		master_slave_test(from_mam),
-		master_slave_test(mucsub_mam)]
-	end
-      }.
+      master_slave_test(send_all),
+      master_slave_test(from_mam),
+      master_slave_test(mucsub_mam)]}.
 
 flex_master(Config) ->
     send_messages(Config, 5),
@@ -189,11 +184,11 @@ from_mam_master(Config) ->
 
 from_mam_slave(Config) ->
     Server = ?config(server, Config),
-    gen_mod:update_module_opts(Server, mod_offline, [{use_mam_for_storage, true}]),
+    gen_mod:update_module(Server, mod_offline, #{use_mam_for_storage => true}),
     ok = mam_tests:set_default(Config, always),
     C2 = lists:keystore(mam_enabled, 1, Config, {mam_enabled, true}),
     C3 = send_all_slave(C2),
-    gen_mod:update_module_opts(Server, mod_offline, [{use_mam_for_storage, false}]),
+    gen_mod:update_module(Server, mod_offline, #{use_mam_for_storage => false}),
     C4 = lists:keydelete(mam_enabled, 1, C3),
     mam_tests:clean(C4).
 
@@ -234,8 +229,8 @@ mucsub_mam_master(Config) ->
 
 mucsub_mam_slave(Config) ->
     Server = ?config(server, Config),
-    gen_mod:update_module_opts(Server, mod_offline, [{use_mam_for_storage, true}]),
-    gen_mod:update_module_opts(Server, mod_mam, [{user_mucsub_from_muc_archive, true}]),
+    gen_mod:update_module(Server, mod_offline, #{use_mam_for_storage => true}),
+    gen_mod:update_module(Server, mod_mam, #{user_mucsub_from_muc_archive => true}),
 
     Room = suite:muc_room_jid(Config),
     MyJID = my_jid(Config),
@@ -268,8 +263,8 @@ mucsub_mam_slave(Config) ->
     ]}, #iq{type = result}),
     suite:put_event(Config, ready),
     mam_tests:clean(clean(disconnect(Config))),
-    gen_mod:update_module_opts(Server, mod_offline, [{use_mam_for_storage, false}]),
-    gen_mod:update_module_opts(Server, mod_mam, [{user_mucsub_from_muc_archive, false}]).
+    gen_mod:update_module(Server, mod_offline, #{use_mam_for_storage => false}),
+    gen_mod:update_module(Server, mod_mam, #{user_mucsub_from_muc_archive => false}).
 
 send_all_master(Config) ->
     wait_for_slave(Config),

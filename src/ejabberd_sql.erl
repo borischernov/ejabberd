@@ -25,14 +25,12 @@
 
 -module(ejabberd_sql).
 
--behaviour(ejabberd_config).
-
 -author('alexey@process-one.net').
 
 -behaviour(p1_fsm).
 
 %% External exports
--export([start/1, start_link/2,
+-export([start_link/2,
 	 sql_query/2,
 	 sql_query_t/1,
 	 sql_transaction/2,
@@ -65,79 +63,54 @@
 	 code_change/4]).
 
 -export([connecting/2, connecting/3,
-	 session_established/2, session_established/3,
-	 opt_type/1]).
+	 session_established/2, session_established/3]).
 
 -include("logger.hrl").
 -include("ejabberd_sql_pt.hrl").
 -include("ejabberd_stacktrace.hrl").
 
 -record(state,
-	{db_ref = self()                     :: pid(),
-	 db_type = odbc                      :: pgsql | mysql | sqlite | odbc | mssql,
-	 db_version = undefined              :: undefined | non_neg_integer(),
-	 start_interval = 0                  :: non_neg_integer(),
-	 host = <<"">>                       :: binary(),
-	 pending_requests                    :: p1_queue:queue()}).
+	{db_ref               :: undefined | pid(),
+	 db_type = odbc       :: pgsql | mysql | sqlite | odbc | mssql,
+	 db_version           :: undefined | non_neg_integer(),
+	 host                 :: binary(),
+	 pending_requests     :: p1_queue:queue(),
+	 overload_reported    :: undefined | integer()}).
 
 -define(STATE_KEY, ejabberd_sql_state).
-
 -define(NESTING_KEY, ejabberd_sql_nesting_level).
-
 -define(TOP_LEVEL_TXN, 0).
-
--define(PGSQL_PORT, 5432).
-
--define(MYSQL_PORT, 3306).
-
--define(MSSQL_PORT, 1433).
-
 -define(MAX_TRANSACTION_RESTARTS, 10).
-
 -define(KEEPALIVE_QUERY, [<<"SELECT 1;">>]).
-
 -define(PREPARE_KEY, ejabberd_sql_prepare).
-
--ifdef(NEW_SQL_SCHEMA).
--define(USE_NEW_SCHEMA_DEFAULT, true).
--else.
--define(USE_NEW_SCHEMA_DEFAULT, false).
--endif.
-
 %%-define(DBGFSM, true).
-
 -ifdef(DBGFSM).
-
 -define(FSMOPTS, [{debug, [trace]}]).
-
 -else.
-
 -define(FSMOPTS, []).
-
 -endif.
+
+-type state() :: #state{}.
+-type sql_query_simple() :: [sql_query() | binary()] | #sql_query{} |
+			    fun(() -> any()) | fun((atom(), _) -> any()).
+-type sql_query() :: sql_query_simple() |
+		     [{atom() | {atom(), any()}, sql_query_simple()}].
+-type sql_query_result() :: {updated, non_neg_integer()} |
+                            {error, binary() | atom()} |
+                            {selected, [binary()], [[binary()]]} |
+                            {selected, [any()]} |
+			    ok.
 
 %%%----------------------------------------------------------------------
 %%% API
 %%%----------------------------------------------------------------------
-start(Host) ->
-    p1_fsm:start(ejabberd_sql, [Host],
-		     fsm_limit_opts() ++ (?FSMOPTS)).
-
-start_link(Host, StartInterval) ->
-    p1_fsm:start_link(ejabberd_sql,
-			  [Host, StartInterval],
-			  fsm_limit_opts() ++ (?FSMOPTS)).
-
--type sql_query() :: [sql_query() | binary()] | #sql_query{} |
-                     fun(() -> any()) | fun((atom(), _) -> any()).
--type sql_query_result() :: {updated, non_neg_integer()} |
-                            {error, binary()} |
-                            {selected, [binary()],
-                             [[binary()]]} |
-                            {selected, [any()]}.
+-spec start_link(binary(), pos_integer()) -> {ok, pid()} | {error, term()}.
+start_link(Host, I) ->
+    Proc = binary_to_atom(get_worker_name(Host, I), utf8),
+    p1_fsm:start_link({local, Proc}, ?MODULE, [Host],
+		      fsm_limit_opts() ++ ?FSMOPTS).
 
 -spec sql_query(binary(), sql_query()) -> sql_query_result().
-
 sql_query(Host, Query) ->
     sql_call(Host, {sql_query, Query}).
 
@@ -146,7 +119,6 @@ sql_query(Host, Query) ->
 -spec sql_transaction(binary(), [sql_query()] | fun(() -> any())) ->
                              {atomic, any()} |
                              {aborted, any()}.
-
 sql_transaction(Host, Queries)
     when is_list(Queries) ->
     F = fun () ->
@@ -156,52 +128,54 @@ sql_transaction(Host, Queries)
     sql_transaction(Host, F);
 %% SQL transaction, based on a erlang anonymous function (F = fun)
 sql_transaction(Host, F) when is_function(F) ->
-    sql_call(Host, {sql_transaction, F}).
+    case sql_call(Host, {sql_transaction, F}) of
+	{atomic, _} = Ret -> Ret;
+	{aborted, _} = Ret -> Ret;
+	Err -> {aborted, Err}
+    end.
 
 %% SQL bloc, based on a erlang anonymous function (F = fun)
 sql_bloc(Host, F) -> sql_call(Host, {sql_bloc, F}).
 
 sql_call(Host, Msg) ->
+    Timeout = query_timeout(Host),
     case get(?STATE_KEY) of
-      undefined ->
-        case ejabberd_sql_sup:get_random_pid(Host) of
-          none -> {error, <<"Unknown Host">>};
-          Pid ->
-		sync_send_event(Pid,{sql_cmd, Msg,
-				     erlang:monotonic_time(millisecond)},
-				query_timeout(Host))
-          end;
-      _State -> nested_op(Msg)
+	undefined ->
+	    Proc = get_worker(Host),
+	    sync_send_event(Proc, {sql_cmd, Msg, current_time() + Timeout},
+			    Timeout);
+	_State ->
+	    nested_op(Msg)
     end.
 
-keep_alive(Host, PID) ->
-    case sync_send_event(PID,
-		    {sql_cmd, {sql_query, ?KEEPALIVE_QUERY},
-		     erlang:monotonic_time(millisecond)},
-		    query_timeout(Host)) of
+keep_alive(Host, Proc) ->
+    Timeout = query_timeout(Host),
+    case sync_send_event(
+	   Proc,
+	   {sql_cmd, {sql_query, ?KEEPALIVE_QUERY}, current_time() + Timeout},
+	   Timeout) of
 	{selected,_,[[<<"1">>]]} ->
 	    ok;
 	_Err ->
-	    ?ERROR_MSG("keep alive query failed, closing connection: ~p", [_Err]),
-	    sync_send_event(PID, force_timeout, query_timeout(Host))
+	    ?ERROR_MSG("Keep alive query failed, closing connection: ~p", [_Err]),
+	    sync_send_event(Proc, force_timeout, Timeout)
     end.
 
-sync_send_event(Pid, Msg, Timeout) ->
-    try p1_fsm:sync_send_event(Pid, Msg, Timeout)
+sync_send_event(Proc, Msg, Timeout) ->
+    try p1_fsm:sync_send_event(Proc, Msg, Timeout)
     catch _:{Reason, {p1_fsm, _, _}} ->
 	    {error, Reason}
     end.
 
 -spec sql_query_t(sql_query()) -> sql_query_result().
-
 %% This function is intended to be used from inside an sql_transaction:
 sql_query_t(Query) ->
     QRes = sql_query_internal(Query),
     case QRes of
-      {error, Reason} -> throw({aborted, Reason});
+      {error, Reason} -> restart(Reason);
       Rs when is_list(Rs) ->
 	  case lists:keysearch(error, 1, Rs) of
-	    {value, {error, Reason}} -> throw({aborted, Reason});
+	    {value, {error, Reason}} -> restart(Reason);
 	    _ -> QRes
 	  end;
       _ -> QRes
@@ -300,43 +274,53 @@ sqlite_db(Host) ->
 
 -spec sqlite_file(binary()) -> string().
 sqlite_file(Host) ->
-    case ejabberd_config:get_option({sql_database, Host}) of
+    case ejabberd_option:sql_database(Host) of
 	undefined ->
-	    {ok, Cwd} = file:get_cwd(),
-	    filename:join([Cwd, "sqlite", atom_to_list(node()),
-			   binary_to_list(Host), "ejabberd.db"]);
+	    Path = ["sqlite", atom_to_list(node()),
+		    binary_to_list(Host), "ejabberd.db"],
+	    case file:get_cwd() of
+		{ok, Cwd} ->
+		    filename:join([Cwd|Path]);
+		{error, Reason} ->
+		    ?ERROR_MSG("Failed to get current directory: ~s",
+			       [file:format_error(Reason)]),
+		    filename:join(Path)
+	    end;
 	File ->
 	    binary_to_list(File)
     end.
 
 use_new_schema() ->
-    ejabberd_config:get_option(new_sql_schema, ?USE_NEW_SCHEMA_DEFAULT).
+    ejabberd_option:new_sql_schema().
+
+-spec get_worker(binary()) -> atom().
+get_worker(Host) ->
+    PoolSize = ejabberd_option:sql_pool_size(Host),
+    I = p1_rand:round_robin(PoolSize) + 1,
+    binary_to_existing_atom(get_worker_name(Host, I), utf8).
+
+-spec get_worker_name(binary(), pos_integer()) -> binary().
+get_worker_name(Host, I) ->
+    <<"ejabberd_sql_", Host/binary, $_, (integer_to_binary(I))/binary>>.
 
 %%%----------------------------------------------------------------------
 %%% Callback functions from gen_fsm
 %%%----------------------------------------------------------------------
-init([Host, StartInterval]) ->
+init([Host]) ->
     process_flag(trap_exit, true),
-    case ejabberd_config:get_option({sql_keepalive_interval, Host}) of
+    case ejabberd_option:sql_keepalive_interval(Host) of
         undefined ->
             ok;
         KeepaliveInterval ->
-            timer:apply_interval(KeepaliveInterval * 1000, ?MODULE,
+            timer:apply_interval(KeepaliveInterval, ?MODULE,
                                  keep_alive, [Host, self()])
     end,
     [DBType | _] = db_opts(Host),
     p1_fsm:send_event(self(), connect),
-    ejabberd_sql_sup:add_pid(Host, self()),
-    QueueType = case ejabberd_config:get_option({sql_queue_type, Host}) of
-		    undefined ->
-			ejabberd_config:default_queue_type(Host);
-		    Type ->
-			Type
-		end,
+    QueueType = ejabberd_option:sql_queue_type(Host),
     {ok, connecting,
      #state{db_type = DBType, host = Host,
-	    pending_requests = p1_queue:new(QueueType, max_fsm_queue()),
-	    start_interval = StartInterval}}.
+	    pending_requests = p1_queue:new(QueueType, max_fsm_queue())}}.
 
 connecting(connect, #state{host = Host} = State) ->
     ConnectRes = case db_opts(Host) of
@@ -348,55 +332,52 @@ connecting(connect, #state{host = Host} = State) ->
 		 end,
     case ConnectRes of
         {ok, Ref} ->
-            erlang:monitor(process, Ref),
-            lists:foreach(
-              fun({{?PREPARE_KEY, _} = Key, _}) ->
-                      erase(Key);
-                 (_) ->
-                      ok
-              end, get()),
-	    PendingRequests =
-		p1_queue:dropwhile(
-		  fun(Req) ->
-			  p1_fsm:send_event(self(), Req),
-			  true
-		  end, State#state.pending_requests),
-            State1 = State#state{db_ref = Ref,
-                                 pending_requests = PendingRequests},
-            State2 = get_db_version(State1),
-            {next_state, session_established, State2};
-      {error, Reason} ->
-	  ?WARNING_MSG("~p connection failed:~n** Reason: ~p~n** "
-		       "Retry after: ~p seconds",
-		       [State#state.db_type, Reason,
-			State#state.start_interval div 1000]),
-	  p1_fsm:send_event_after(State#state.start_interval,
-				      connect),
-	  {next_state, connecting, State}
+	    try link(Ref) of
+		_ ->
+		    lists:foreach(
+		      fun({{?PREPARE_KEY, _} = Key, _}) ->
+			      erase(Key);
+			 (_) ->
+			      ok
+		      end, get()),
+		    PendingRequests =
+			p1_queue:dropwhile(
+			  fun(Req) ->
+				  p1_fsm:send_event(self(), Req),
+				  true
+			  end, State#state.pending_requests),
+		    State1 = State#state{db_ref = Ref,
+					 pending_requests = PendingRequests},
+		    State2 = get_db_version(State1),
+		    {next_state, session_established, State2}
+	    catch _:Reason ->
+		    handle_reconnect(Reason, State)
+	    end;
+	{error, Reason} ->
+	    handle_reconnect(Reason, State)
     end;
 connecting(Event, State) ->
-    ?WARNING_MSG("unexpected event in 'connecting': ~p",
+    ?WARNING_MSG("Unexpected event in 'connecting': ~p",
 		 [Event]),
     {next_state, connecting, State}.
 
-connecting({sql_cmd, {sql_query, ?KEEPALIVE_QUERY},
-	    _Timestamp},
+connecting({sql_cmd, {sql_query, ?KEEPALIVE_QUERY}, Timestamp},
 	   From, State) ->
-    p1_fsm:reply(From,
-		     {error, <<"SQL connection failed">>}),
+    reply(From, {error, <<"SQL connection failed">>}, Timestamp),
     {next_state, connecting, State};
 connecting({sql_cmd, Command, Timestamp} = Req, From,
 	   State) ->
-    ?DEBUG("queuing pending request while connecting:~n\t~p",
+    ?DEBUG("Queuing pending request while connecting:~n\t~p",
 	   [Req]),
     PendingRequests =
 	try p1_queue:in({sql_cmd, Command, From, Timestamp},
 			State#state.pending_requests)
 	catch error:full ->
+		Err = <<"SQL request queue is overfilled">>,
+		?ERROR_MSG("~s, bouncing all pending requests", [Err]),
 		Q = p1_queue:dropwhile(
-		      fun({sql_cmd, _, To, _Timestamp}) ->
-			      p1_fsm:reply(
-				To, {error, <<"SQL connection failed">>}),
+		      fun({sql_cmd, _, To, TS}) ->
+			      reply(To, {error, Err}, TS),
 			      true
 		      end, State#state.pending_requests),
 		p1_queue:in({sql_cmd, Command, From, Timestamp}, Q)
@@ -404,18 +385,17 @@ connecting({sql_cmd, Command, Timestamp} = Req, From,
     {next_state, connecting,
      State#state{pending_requests = PendingRequests}};
 connecting(Request, {Who, _Ref}, State) ->
-    ?WARNING_MSG("unexpected call ~p from ~p in 'connecting'",
+    ?WARNING_MSG("Unexpected call ~p from ~p in 'connecting'",
 		 [Request, Who]),
-    {reply, {error, badarg}, connecting, State}.
+    {next_state, connecting, State}.
 
 session_established({sql_cmd, Command, Timestamp}, From,
 		    State) ->
     run_sql_cmd(Command, From, State, Timestamp);
 session_established(Request, {Who, _Ref}, State) ->
-    ?WARNING_MSG("unexpected call ~p from ~p in 'session_establ"
-		 "ished'",
+    ?WARNING_MSG("Unexpected call ~p from ~p in 'session_established'",
 		 [Request, Who]),
-    {reply, {error, badarg}, session_established, State}.
+    {next_state, session_established, State}.
 
 session_established({sql_cmd, Command, From, Timestamp},
 		    State) ->
@@ -423,7 +403,7 @@ session_established({sql_cmd, Command, From, Timestamp},
 session_established(force_timeout, State) ->
     {stop, timeout, State};
 session_established(Event, State) ->
-    ?WARNING_MSG("unexpected event in 'session_established': ~p",
+    ?WARNING_MSG("Unexpected event in 'session_established': ~p",
 		 [Event]),
     {next_state, session_established, State}.
 
@@ -436,19 +416,14 @@ handle_sync_event(_Event, _From, StateName, State) ->
 code_change(_OldVsn, StateName, State, _Extra) ->
     {ok, StateName, State}.
 
-%% We receive the down signal when we loose the MySQL connection (we are
-%% monitoring the connection)
-handle_info({'DOWN', _MonitorRef, process, _Pid, _Info},
-	    _StateName, State) ->
-    p1_fsm:send_event(self(), connect),
-    {next_state, connecting, State};
+handle_info({'EXIT', _Pid, Reason}, _StateName, State) ->
+    handle_reconnect(Reason, State);
 handle_info(Info, StateName, State) ->
-    ?WARNING_MSG("unexpected info in ~p: ~p",
+    ?WARNING_MSG("Unexpected info in ~p: ~p",
 		 [StateName, Info]),
     {next_state, StateName, State}.
 
 terminate(_Reason, _StateName, State) ->
-    ejabberd_sql_sup:remove_pid(State#state.host, self()),
     case State#state.db_type of
         mysql -> catch p1_mysql_conn:stop(State#state.db_ref);
         sqlite -> catch sqlite3:close(sqlite_db(State#state.host));
@@ -466,19 +441,25 @@ print_state(State) -> State.
 %%%----------------------------------------------------------------------
 %%% Internal functions
 %%%----------------------------------------------------------------------
+handle_reconnect(Reason, #state{host = Host} = State) ->
+    StartInterval = ejabberd_option:sql_start_interval(Host),
+    ?WARNING_MSG("~p connection failed:~n"
+		 "** Reason: ~p~n"
+		 "** Retry after: ~B seconds",
+		 [State#state.db_type, Reason,
+		  StartInterval div 1000]),
+    p1_fsm:send_event_after(StartInterval, connect),
+    {next_state, connecting, State}.
 
 run_sql_cmd(Command, From, State, Timestamp) ->
-    QueryTimeout = query_timeout(State#state.host),
-    case erlang:monotonic_time(millisecond) - Timestamp of
-      Age when Age < QueryTimeout ->
-	  put(?NESTING_KEY, ?TOP_LEVEL_TXN),
-	  put(?STATE_KEY, State),
-	  abort_on_driver_error(outer_op(Command), From);
-      Age ->
-	  ?ERROR_MSG("Database was not available or too slow, "
-		     "discarding ~p milliseconds old request~n~p~n",
-		     [Age, Command]),
-	  {next_state, session_established, State}
+    case current_time() >= Timestamp of
+	true ->
+	    State1 = report_overload(State),
+	    {next_state, session_established, State1};
+	false ->
+	    put(?NESTING_KEY, ?TOP_LEVEL_TXN),
+	    put(?STATE_KEY, State),
+	    abort_on_driver_error(outer_op(Command), From, Timestamp)
     end.
 
 %% Only called by handle_call, only handles top level operations.
@@ -507,7 +488,7 @@ inner_transaction(F) ->
     case get(?NESTING_KEY) of
       ?TOP_LEVEL_TXN ->
 	  {backtrace, T} = process_info(self(), backtrace),
-	  ?ERROR_MSG("inner transaction called at outer txn "
+	  ?ERROR_MSG("Inner transaction called at outer txn "
 		     "level. Trace: ~s",
 		     [T]),
 	  erlang:exit(implementation_faulty);
@@ -529,7 +510,7 @@ outer_transaction(F, NRestarts, _Reason) ->
       ?TOP_LEVEL_TXN -> ok;
       _N ->
 	  {backtrace, T} = process_info(self(), backtrace),
-	  ?ERROR_MSG("outer transaction called at inner txn "
+	  ?ERROR_MSG("Outer transaction called at inner txn "
 		     "level. Trace: ~s",
 		     [T]),
 	  erlang:exit(implementation_faulty)
@@ -546,12 +527,13 @@ outer_transaction(F, NRestarts, _Reason) ->
             put(?NESTING_KEY, ?TOP_LEVEL_TXN),
 	    outer_transaction(F, NRestarts - 1, Reason);
 	?EX_RULE(throw, {aborted, Reason}, Stack) when NRestarts =:= 0 ->
+	    StackTrace = ?EX_STACK(Stack),
 	    ?ERROR_MSG("SQL transaction restarts exceeded~n** "
 		       "Restarts: ~p~n** Last abort reason: "
 		       "~p~n** Stacktrace: ~p~n** When State "
 		       "== ~p",
 		       [?MAX_TRANSACTION_RESTARTS, Reason,
-			?EX_STACK(Stack), get(?STATE_KEY)]),
+			StackTrace, get(?STATE_KEY)]),
 	    sql_query_internal([<<"rollback;">>]),
 	    {aborted, Reason};
 	?EX_RULE(exit, Reason, _) ->
@@ -622,9 +604,12 @@ sql_query_internal(#sql_query{} = Query) ->
 		{error, <<"killed">>};
 	      exit:{normal, _} ->
 		{error, <<"terminated unexpectedly">>};
+	      exit:{shutdown, _} ->
+		{error, <<"shutdown">>};
 	      ?EX_RULE(Class, Reason, Stack) ->
-                ?ERROR_MSG("Internal error while processing SQL query: ~p",
-                           [{Class, Reason, ?EX_STACK(Stack)}]),
+		StackTrace = ?EX_STACK(Stack),
+                ?ERROR_MSG("Internal error while processing SQL query:~n** ~s",
+			   [misc:format_exception(2, Class, Reason, StackTrace)]),
                 {error, <<"internal error">>}
         end,
     check_error(Res, Query);
@@ -764,10 +749,11 @@ sql_query_format_res({selected, _, Rows}, SQLQuery) ->
                       [(SQLQuery#sql_query.format_res)(Row)]
                   catch
 		      ?EX_RULE(Class, Reason, Stack) ->
-                          ?ERROR_MSG("Error while processing "
-                                     "SQL query result: ~p~n"
-                                     "row: ~p",
-                                     [{Class, Reason, ?EX_STACK(Stack)}, Row]),
+			  StackTrace = ?EX_STACK(Stack),
+                          ?ERROR_MSG("Error while processing SQL query result:~n"
+                                     "** Row: ~p~n** ~s",
+                                     [Row,
+				      misc:format_exception(2, Class, Reason, StackTrace)]),
                           []
                   end
           end, Rows),
@@ -779,29 +765,41 @@ sql_query_to_iolist(SQLQuery) ->
     generic_sql_query_format(SQLQuery).
 
 %% Generate the OTP callback return tuple depending on the driver result.
-abort_on_driver_error({error,
-		       <<"query timed out">>} = Reply,
-		      From) ->
-    p1_fsm:reply(From, Reply),
+abort_on_driver_error({error, <<"query timed out">>} = Reply, From, Timestamp) ->
+    reply(From, Reply, Timestamp),
     {stop, timeout, get(?STATE_KEY)};
-abort_on_driver_error({error,
-		       <<"Failed sending data on socket", _/binary>>} = Reply,
-		      From) ->
-    p1_fsm:reply(From, Reply),
+abort_on_driver_error({error, <<"Failed sending data on socket", _/binary>>} = Reply,
+		      From, Timestamp) ->
+    reply(From, Reply, Timestamp),
     {stop, closed, get(?STATE_KEY)};
-abort_on_driver_error({error,
-		       <<"SQL connection failed">>} = Reply,
-		      From) ->
-    p1_fsm:reply(From, Reply),
+abort_on_driver_error({error, <<"SQL connection failed">>} = Reply, From, Timestamp) ->
+    reply(From, Reply, Timestamp),
     {stop, timeout, get(?STATE_KEY)};
-abort_on_driver_error({error,
-		       <<"Communication link failure">>} = Reply,
-		      From) ->
-    p1_fsm:reply(From, Reply),
+abort_on_driver_error({error, <<"Communication link failure">>} = Reply, From, Timestamp) ->
+    reply(From, Reply, Timestamp),
     {stop, closed, get(?STATE_KEY)};
-abort_on_driver_error(Reply, From) ->
-    p1_fsm:reply(From, Reply),
+abort_on_driver_error(Reply, From, Timestamp) ->
+    reply(From, Reply, Timestamp),
     {next_state, session_established, get(?STATE_KEY)}.
+
+-spec report_overload(state()) -> state().
+report_overload(#state{overload_reported = PrevTime} = State) ->
+    CurrTime = current_time(),
+    case PrevTime == undefined orelse (CurrTime - PrevTime) > timer:seconds(30) of
+	true ->
+	    ?ERROR_MSG("SQL connection pool is overloaded, "
+		       "discarding stale requests", []),
+	    State#state{overload_reported = current_time()};
+	false ->
+	    State
+    end.
+
+-spec reply({pid(), term()}, term(), integer()) -> term().
+reply(From, Reply, Timestamp) ->
+    case current_time() >= Timestamp of
+	true -> ok;
+	false -> p1_fsm:reply(From, Reply)
+    end.
 
 %% == pure ODBC code
 
@@ -976,11 +974,11 @@ get_db_version(#state{db_type = pgsql} = State) ->
                 Version when is_integer(Version) ->
                     State#state{db_version = Version};
                 Error ->
-                    ?WARNING_MSG("error getting pgsql version: ~p", [Error]),
+                    ?WARNING_MSG("Error getting pgsql version: ~p", [Error]),
                     State
             end;
         Res ->
-            ?WARNING_MSG("error getting pgsql version: ~p", [Res]),
+            ?WARNING_MSG("Error getting pgsql version: ~p", [Res]),
             State
     end;
 get_db_version(State) ->
@@ -995,11 +993,13 @@ log(Level, Format, Args) ->
     end.
 
 db_opts(Host) ->
-    Type = ejabberd_config:get_option({sql_type, Host}, odbc),
-    Server = ejabberd_config:get_option({sql_server, Host}, <<"localhost">>),
-    Timeout = timer:seconds(
-		ejabberd_config:get_option({sql_connect_timeout, Host}, 5)),
-    Transport = case ejabberd_config:get_option({sql_ssl, Host}, false) of
+    Type = case ejabberd_option:sql_type(Host) of
+	       undefined -> odbc;
+	       T -> T
+	   end,
+    Server = ejabberd_option:sql_server(Host),
+    Timeout = ejabberd_option:sql_connect_timeout(Host),
+    Transport = case ejabberd_option:sql_ssl(Host) of
 		    false -> tcp;
 		    true -> ssl
 		end,
@@ -1010,19 +1010,13 @@ db_opts(Host) ->
         sqlite ->
             [sqlite, Host];
         _ ->
-            Port = ejabberd_config:get_option(
-                     {sql_port, Host},
-                     case Type of
-			 mssql -> ?MSSQL_PORT;
-                         mysql -> ?MYSQL_PORT;
-                         pgsql -> ?PGSQL_PORT
-                     end),
-            DB = ejabberd_config:get_option({sql_database, Host},
-                                            <<"ejabberd">>),
-            User = ejabberd_config:get_option({sql_username, Host},
-                                              <<"ejabberd">>),
-            Pass = ejabberd_config:get_option({sql_password, Host},
-                                              <<"">>),
+            Port = ejabberd_option:sql_port(Host),
+            DB = case ejabberd_option:sql_database(Host) of
+		     undefined -> <<"ejabberd">>;
+		     D -> D
+		 end,
+            User = ejabberd_option:sql_username(Host),
+            Pass = ejabberd_option:sql_password(Host),
 	    SSLOpts = get_ssl_opts(Transport, Host),
 	    case Type of
 		mssql ->
@@ -1041,15 +1035,15 @@ warn_if_ssl_unsupported(ssl, Type) ->
     ?WARNING_MSG("SSL connection is not supported for ~s", [Type]).
 
 get_ssl_opts(ssl, Host) ->
-    Opts1 = case ejabberd_config:get_option({sql_ssl_certfile, Host}) of
+    Opts1 = case ejabberd_option:sql_ssl_certfile(Host) of
 		undefined -> [];
 		CertFile -> [{certfile, CertFile}]
 	    end,
-    Opts2 = case ejabberd_config:get_option({sql_ssl_cafile, Host}) of
+    Opts2 = case ejabberd_option:sql_ssl_cafile(Host) of
 		undefined -> Opts1;
 		CAFile -> [{cacertfile, CAFile}|Opts1]
 	    end,
-    case ejabberd_config:get_option({sql_ssl_verify, Host}, false) of
+    case ejabberd_option:sql_ssl_verify(Host) of
 	true ->
 	    case lists:keymember(cacertfile, 1, Opts2) of
 		true ->
@@ -1068,9 +1062,12 @@ get_ssl_opts(tcp, _) ->
     [].
 
 init_mssql(Host) ->
-    Server = ejabberd_config:get_option({sql_server, Host}, <<"localhost">>),
-    Port = ejabberd_config:get_option({sql_port, Host}, ?MSSQL_PORT),
-    DB = ejabberd_config:get_option({sql_database, Host}, <<"ejabberd">>),
+    Server = ejabberd_option:sql_server(Host),
+    Port = ejabberd_option:sql_port(Host),
+    DB = case ejabberd_option:sql_database(Host) of
+	     undefined -> <<"ejabberd">>;
+	     D -> D
+	 end,
     FreeTDS = io_lib:fwrite("[~s]~n"
 			    "\thost = ~s~n"
 			    "\tport = ~p~n"
@@ -1104,12 +1101,12 @@ init_mssql(Host) ->
 		os:putenv("FREETDSCONF", freetds_config()),
 		ok
 	    catch error:{badmatch, {error, Reason} = Err} ->
-		    ?ERROR_MSG("failed to create temporary files in ~s: ~s",
+		    ?ERROR_MSG("Failed to create temporary files in ~s: ~s",
 			       [tmp_dir(), file:format_error(Reason)]),
 		    Err
 	    end;
 	{error, Reason} = Err ->
-	    ?ERROR_MSG("failed to create temporary directory ~s: ~s",
+	    ?ERROR_MSG("Failed to create temporary directory ~s: ~s",
 		       [tmp_dir(), file:format_error(Reason)]),
 	    Err
     end.
@@ -1142,8 +1139,10 @@ fsm_limit_opts() ->
     ejabberd_config:fsm_limit_opts([]).
 
 query_timeout(LServer) ->
-    timer:seconds(
-      ejabberd_config:get_option({sql_query_timeout, LServer}, 60)).
+    ejabberd_option:sql_query_timeout(LServer).
+
+current_time() ->
+    erlang:monotonic_time(millisecond).
 
 %% ***IMPORTANT*** This error format requires extended_errors turned on.
 extended_error({"08S01", _, Reason}) ->
@@ -1186,31 +1185,3 @@ check_error({error, Why}, Query) ->
     {error, Err};
 check_error(Result, _Query) ->
     Result.
-
--spec opt_type(atom()) -> fun((any()) -> any()) | [atom()].
-opt_type(sql_database) -> fun iolist_to_binary/1;
-opt_type(sql_keepalive_interval) ->
-    fun (I) when is_integer(I), I > 0 -> I end;
-opt_type(sql_password) -> fun iolist_to_binary/1;
-opt_type(sql_port) ->
-    fun (P) when is_integer(P), P > 0, P < 65536 -> P end;
-opt_type(sql_server) -> fun iolist_to_binary/1;
-opt_type(sql_username) -> fun iolist_to_binary/1;
-opt_type(sql_ssl) -> fun(B) when is_boolean(B) -> B end;
-opt_type(sql_ssl_verify) -> fun(B) when is_boolean(B) -> B end;
-opt_type(sql_ssl_certfile) -> fun ejabberd_pkix:try_certfile/1;
-opt_type(sql_ssl_cafile) -> fun ejabberd_pkix:try_certfile/1;
-opt_type(sql_query_timeout) ->
-    fun (I) when is_integer(I), I > 0 -> I end;
-opt_type(sql_connect_timeout) ->
-    fun (I) when is_integer(I), I > 0 -> I end;
-opt_type(sql_queue_type) ->
-    fun(ram) -> ram; (file) -> file end;
-opt_type(new_sql_schema) -> fun(B) when is_boolean(B) -> B end;
-opt_type(_) ->
-    [sql_database, sql_keepalive_interval,
-     sql_password, sql_port, sql_server,
-     sql_username, sql_ssl, sql_ssl_verify, sql_ssl_certfile,
-     sql_ssl_cafile, sql_queue_type, sql_query_timeout,
-     sql_connect_timeout,
-     new_sql_schema].

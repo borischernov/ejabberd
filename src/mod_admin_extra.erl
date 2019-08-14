@@ -399,7 +399,8 @@ get_commands_spec() ->
 			    "connected)\n\n'status' is a free text "
 			    "defined by the user client.",
 			module = ?MODULE, function = get_presence,
-			args = [{user, binary}, {server, binary}],
+			args = [{user, binary}, {host, binary}],
+			args_rename = [{server, host}],
 			args_example = [<<"peter">>, <<"myexample.com">>],
 			args_desc = ["User name", "Server name"],
 			result_example = {<<"user1@myserver.com/tka">>, <<"dnd">>, <<"Busy">>},
@@ -485,10 +486,11 @@ get_commands_spec() ->
 			desc = "Add an item to a user's roster (supports ODBC)",
 			longdesc = "Group can be several groups separated by ; for example: \"g1;g2;g3\"",
 			module = ?MODULE, function = add_rosteritem,
-			args = [{localuser, binary}, {localserver, binary},
-				{user, binary}, {server, binary},
+			args = [{localuser, binary}, {localhost, binary},
+				{user, binary}, {host, binary},
 				{nick, binary}, {group, binary},
 				{subs, binary}],
+			args_rename = [{localserver, localhost}, {server, host}],
 			args_example = [<<"user1">>,<<"myserver.com">>,<<"user2">>, <<"myserver.com">>,
 				<<"User 2">>, <<"Friends">>, <<"both">>],
 			args_desc = ["User name", "Server name", "Contact user name", "Contact server name",
@@ -500,8 +502,9 @@ get_commands_spec() ->
      #ejabberd_commands{name = delete_rosteritem, tags = [roster],
 			desc = "Delete an item from a user's roster (supports ODBC)",
 			module = ?MODULE, function = delete_rosteritem,
-			args = [{localuser, binary}, {localserver, binary},
-				{user, binary}, {server, binary}],
+			args = [{localuser, binary}, {localhost, binary},
+				{user, binary}, {host, binary}],
+			args_rename = [{localserver, localhost}, {server, host}],
 			args_example = [<<"user1">>,<<"myserver.com">>,<<"user2">>, <<"myserver.com">>],
 			args_desc = ["User name", "Server name", "Contact user name", "Contact server name"],
 			result = {res, rescode}},
@@ -569,6 +572,7 @@ get_commands_spec() ->
                         policy = user,
 			module = ?MODULE, function = get_roster,
 			args = [],
+			args_rename = [{server, host}],
 			result = {contacts, {list, {contact, {tuple, [
 								      {jid, string},
 								      {nick, string},
@@ -720,17 +724,22 @@ get_commands_spec() ->
 			policy = user,
 			module = mod_offline, function = count_offline_messages,
 			args = [],
+			args_rename = [{server, host}],
 			result_example = 5,
 			result_desc = "Number",
 			result = {value, integer}},
      #ejabberd_commands{name = send_message, tags = [stanza],
 			desc = "Send a message to a local or remote bare of full JID",
+			longdesc = "When sending a groupchat message to a MUC room, "
+			"FROM must be the full JID of a room occupant, "
+			"or the bare JID of a MUC service admin, "
+			"or the bare JID of a MUC/Sub subscribed user.",
 			module = ?MODULE, function = send_message,
 			args = [{type, binary}, {from, binary}, {to, binary},
 				{subject, binary}, {body, binary}],
 			args_example = [<<"headline">>, <<"admin@localhost">>, <<"user1@localhost">>,
 				<<"Restart">>, <<"In 5 minutes">>],
-			args_desc = ["Message type: normal, chat, headline", "Sender JID",
+			args_desc = ["Message type: normal, chat, headline, groupchat", "Sender JID",
 				"Receiver JID", "Subject, or empty string", "Body"],
 			result = {res, rescode}},
      #ejabberd_commands{name = send_stanza_c2s, tags = [stanza],
@@ -844,7 +853,7 @@ check_password_hash(User, Host, PasswordHash, HashMethod) ->
 			  {A, _} when is_tuple(A) -> scrammed;
 			  {_, true} -> get_hash(AccountPass, HashMethod);
 			  {_, false} ->
-			      ?ERROR_MSG("check_password_hash called "
+			      ?ERROR_MSG("Check_password_hash called "
 					 "with hash method: ~p", [HashMethod]),
 			      undefined
 		      end,
@@ -1491,7 +1500,7 @@ send_stanza(FromString, ToString, Stanza) ->
 	#xmlel{} = El = fxml_stream:parse_element(Stanza),
 	From = jid:decode(FromString),
 	To = jid:decode(ToString),
-	CodecOpts = ejabberd_config:codec_options(From#jid.lserver),
+	CodecOpts = ejabberd_config:codec_options(),
 	Pkt = xmpp:decode(El, ?NS_CLIENT, CodecOpts),
 	ejabberd_router:route(xmpp:set_from_to(Pkt, From, To))
     catch _:{xmpp_codec, Why} ->
@@ -1505,16 +1514,24 @@ send_stanza(FromString, ToString, Stanza) ->
 	    {error, "JID malformed"}
     end.
 
+-spec send_stanza_c2s(binary(), binary(), binary(), binary()) -> ok | {error, any()}.
 send_stanza_c2s(Username, Host, Resource, Stanza) ->
-    case {fxml_stream:parse_element(Stanza),
-          ejabberd_sm:get_session_pid(Username, Host, Resource)}
-    of
-	{{error, Error}, _} ->
-	    {error, Error};
-	{_, none} ->
-	    {error, no_session};
-	{XmlEl, C2sPid} ->
-	    p1_fsm:send_event(C2sPid, {xmlstreamelement, XmlEl})
+    try
+	#xmlel{} = El = fxml_stream:parse_element(Stanza),
+	CodecOpts = ejabberd_config:codec_options(),
+	Pkt = xmpp:decode(El, ?NS_CLIENT, CodecOpts),
+	case ejabberd_sm:get_session_pid(Username, Host, Resource) of
+	    Pid when is_pid(Pid) ->
+		ejabberd_c2s:send(Pid, Pkt);
+	    _ ->
+		{error, no_session}
+	end
+    catch _:{badmatch, {error, Why} = Err} ->
+	    io:format("invalid xml: ~p~n", [Why]),
+	    Err;
+	  _:{xmpp_codec, Why} ->
+	    io:format("incorrect stanza: ~s~n", [xmpp:format_error(Why)]),
+	    {error, Why}
     end.
 
 privacy_set(Username, Host, QueryS) ->
@@ -1534,7 +1551,7 @@ stats(Name) ->
     case Name of
 	<<"uptimeseconds">> -> trunc(element(1, erlang:statistics(wall_clock))/1000);
 	<<"processes">> -> length(erlang:processes());
-	<<"registeredusers">> -> lists:foldl(fun(Host, Sum) -> ejabberd_auth:count_users(Host) + Sum end, 0, ejabberd_config:get_myhosts());
+	<<"registeredusers">> -> lists:foldl(fun(Host, Sum) -> ejabberd_auth:count_users(Host) + Sum end, 0, ejabberd_option:hosts());
 	<<"onlineusersnode">> -> length(ejabberd_sm:dirty_get_my_sessions_list());
 	<<"onlineusers">> -> length(ejabberd_sm:dirty_get_sessions_list())
     end.

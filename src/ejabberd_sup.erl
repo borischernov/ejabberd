@@ -28,9 +28,9 @@
 
 -behaviour(supervisor).
 
--export([start_link/0, init/1]).
+-export([start_link/0, init/1, stop_child/1]).
 
--define(SHUTDOWN_TIMEOUT, timer:seconds(30)).
+-define(SHUTDOWN_TIMEOUT, timer:minutes(1)).
 
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
@@ -47,26 +47,31 @@ init([]) ->
 	   supervisor(ejabberd_listener),
 	   worker(ejabberd_pkix),
 	   worker(ejabberd_acme),
-	   worker(ejabberd_s2s),
-	   simple_supervisor(ejabberd_s2s_in),
-	   simple_supervisor(ejabberd_s2s_out),
-	   simple_supervisor(ejabberd_service),
 	   worker(acl),
 	   worker(ejabberd_shaper),
+	   supervisor(ejabberd_db_sup),
 	   supervisor(ejabberd_backend_sup),
 	   supervisor(ejabberd_rdbms),
-	   supervisor(ejabberd_riak_sup),
-	   supervisor(ejabberd_redis_sup),
 	   worker(ejabberd_iq),
 	   worker(ejabberd_router),
 	   worker(ejabberd_router_multicast),
 	   worker(ejabberd_local),
 	   worker(ejabberd_sm),
+	   simple_supervisor(ejabberd_s2s_in),
+	   simple_supervisor(ejabberd_s2s_out),
+	   worker(ejabberd_s2s),
+	   simple_supervisor(ejabberd_service),
 	   worker(ejabberd_captcha),
 	   worker(ext_mod),
 	   supervisor(ejabberd_gen_mod_sup, gen_mod),
 	   worker(ejabberd_auth),
 	   worker(ejabberd_oauth)]}}.
+
+-spec stop_child(atom()) -> ok.
+stop_child(Name) ->
+    _ = supervisor:terminate_child(?MODULE, Name),
+    _ = supervisor:delete_child(?MODULE, Name),
+    ok.
 
 %%%===================================================================
 %%% Internal functions

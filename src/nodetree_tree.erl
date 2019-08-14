@@ -30,7 +30,7 @@
 %%% <p>PubSub node tree plugins are using the {@link gen_nodetree} behaviour.</p>
 %%% <p><strong>The API isn't stabilized yet</strong>. The pubsub plugin
 %%% development is still a work in progress. However, the system is already
-%%% useable and useful as is. Please, send us comments, feedback and
+%%% usable and useful as is. Please, send us comments, feedback and
 %%% improvements.</p>
 
 -module(nodetree_tree).
@@ -41,6 +41,7 @@
 
 -include("pubsub.hrl").
 -include("xmpp.hrl").
+-include("translate.hrl").
 
 -export([init/3, terminate/2, options/0, set_node/1,
     get_node/3, get_node/2, get_node/1, get_nodes/2,
@@ -71,13 +72,13 @@ get_node(Host, Node, _From) ->
 get_node(Host, Node) ->
     case mnesia:read({pubsub_node, {Host, Node}}) of
 	[Record] when is_record(Record, pubsub_node) -> Record;
-	_ -> {error, xmpp:err_item_not_found(<<"Node not found">>, ejabberd_config:get_mylang())}
+	_ -> {error, xmpp:err_item_not_found(?T("Node not found"), ejabberd_option:language())}
     end.
 
 get_node(Nidx) ->
     case mnesia:index_read(pubsub_node, Nidx, #pubsub_node.id) of
 	[Record] when is_record(Record, pubsub_node) -> Record;
-	_ -> {error, xmpp:err_item_not_found(<<"Node not found">>, ejabberd_config:get_mylang())}
+	_ -> {error, xmpp:err_item_not_found(?T("Node not found"), ejabberd_option:language())}
     end.
 
 get_nodes(Host, _From) ->
@@ -138,11 +139,11 @@ get_subnodes_tree(Host, Node) ->
 	Rec ->
 	    BasePlugin = misc:binary_to_atom(<<"node_",
 			(Rec#pubsub_node.type)/binary>>),
-	    BasePath = BasePlugin:node_to_path(Node),
+	    {result, BasePath} = BasePlugin:node_to_path(Node),
 	    mnesia:foldl(fun (#pubsub_node{nodeid = {H, N}} = R, Acc) ->
 			Plugin = misc:binary_to_atom(<<"node_",
 				    (R#pubsub_node.type)/binary>>),
-			Path = Plugin:node_to_path(N),
+			{result, Path} = Plugin:node_to_path(N),
 			case lists:prefix(BasePath, Path) and (H == Host) of
 			    true -> [R | Acc];
 			    false -> Acc
@@ -189,7 +190,7 @@ create_node(Host, Node, Type, Owner, Options, Parents) ->
 		    {error, xmpp:err_forbidden()}
 	    end;
 	_ ->
-	    {error, xmpp:err_conflict(<<"Node already exists">>, ejabberd_config:get_mylang())}
+	    {error, xmpp:err_conflict(?T("Node already exists"), ejabberd_option:language())}
     end.
 
 delete_node(Host, Node) ->

@@ -24,7 +24,6 @@
 
 -module(mod_roster_sql).
 
--compile([{parse_transform, ejabberd_sql_pt}]).
 
 -behaviour(mod_roster).
 
@@ -409,7 +408,7 @@ process_rosteritems_sql(ActionS, Subscription, Ask, SLocalJID, SJID) ->
 	   " and subscription LIKE %(SSubscription)s"
 	   " and ask LIKE %(SAsk)s")),
     case ActionS of
-	"delete" -> [mod_roster:del_roster(User, LServer, jid:decode(Contact)) || {User, Contact} <- List];
+	"delete" -> [mod_roster:del_roster(User, LServer, jid:tolower(jid:decode(Contact))) || {User, Contact} <- List];
 	"list" -> ok
     end,
     List.

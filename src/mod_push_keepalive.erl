@@ -38,7 +38,7 @@
 -include("logger.hrl").
 -include("xmpp.hrl").
 
--define(PUSH_BEFORE_TIMEOUT_SECS, 120).
+-define(PUSH_BEFORE_TIMEOUT_PERIOD, 120000). % 2 minutes.
 
 -type c2s_state() :: ejabberd_c2s:state().
 
@@ -47,7 +47,7 @@
 %%--------------------------------------------------------------------
 -spec start(binary(), gen_mod:opts()) -> ok.
 start(Host, Opts) ->
-    case gen_mod:get_opt(wake_on_start, Opts) of
+    case mod_push_keepalive_opt:wake_on_start(Opts) of
 	true ->
 	    wake_all(Host);
 	false ->
@@ -61,13 +61,13 @@ stop(Host) ->
 
 -spec reload(binary(), gen_mod:opts(), gen_mod:opts()) -> ok.
 reload(Host, NewOpts, OldOpts) ->
-    case gen_mod:is_equal_opt(wake_on_start, NewOpts, OldOpts) of
-	{false, true, _} ->
+    case {mod_push_keepalive_opt:wake_on_start(NewOpts),
+	  mod_push_keepalive_opt:wake_on_start(OldOpts)} of
+	{true, false} ->
 	    wake_all(Host);
 	_ ->
 	    ok
-    end,
-    ok.
+    end.
 
 -spec depends(binary(), gen_mod:opts()) -> [{module(), hard | soft}].
 depends(_Host, _Opts) ->
@@ -75,18 +75,18 @@ depends(_Host, _Opts) ->
      {mod_client_state, soft},
      {mod_stream_mgmt, soft}].
 
--spec mod_opt_type(atom()) -> fun((term()) -> term()) | [atom()].
+-spec mod_opt_type(atom()) -> econf:validator().
 mod_opt_type(resume_timeout) ->
-    fun(I) when is_integer(I), I >= 0 -> I;
-       (undefined) -> undefined
-    end;
+    econf:either(
+      econf:int(0, 0),
+      econf:timeout(second));
 mod_opt_type(wake_on_start) ->
-    fun (B) when is_boolean(B) -> B end;
+    econf:bool();
 mod_opt_type(wake_on_timeout) ->
-    fun (B) when is_boolean(B) -> B end.
+    econf:bool().
 
 mod_options(_Host) ->
-    [{resume_timeout, 259200},
+    [{resume_timeout, timer:seconds(259200)},
      {wake_on_start, false},
      {wake_on_timeout, true}].
 
@@ -110,8 +110,6 @@ register_hooks(Host) ->
 
 -spec unregister_hooks(binary()) -> ok.
 unregister_hooks(Host) ->
-    ejabberd_hooks:delete(disco_sm_features, Host, ?MODULE,
-			  disco_sm_features, 50),
     ejabberd_hooks:delete(c2s_session_pending, Host, ?MODULE,
 			  c2s_session_pending, 50),
     ejabberd_hooks:delete(c2s_session_resumed, Host, ?MODULE,
@@ -176,8 +174,8 @@ c2s_copy_session(State, _) ->
 
 -spec c2s_handle_cast(c2s_state(), any()) -> c2s_state().
 c2s_handle_cast(#{lserver := LServer} = State, push_enable) ->
-    ResumeTimeout = gen_mod:get_module_opt(LServer, ?MODULE, resume_timeout),
-    WakeOnTimeout = gen_mod:get_module_opt(LServer, ?MODULE, wake_on_timeout),
+    ResumeTimeout = mod_push_keepalive_opt:resume_timeout(LServer),
+    WakeOnTimeout = mod_push_keepalive_opt:wake_on_timeout(LServer),
     State#{push_resume_timeout => ResumeTimeout,
 	   push_wake_on_timeout => WakeOnTimeout};
 c2s_handle_cast(State, push_disable) ->
@@ -203,13 +201,13 @@ maybe_adjust_resume_timeout(#{push_resume_timeout := undefined} = State) ->
     State;
 maybe_adjust_resume_timeout(#{push_resume_timeout := Timeout} = State) ->
     OrigTimeout = mod_stream_mgmt:get_resume_timeout(State),
-    ?DEBUG("Adjusting resume timeout to ~B seconds", [Timeout]),
+    ?DEBUG("Adjusting resume timeout to ~B seconds", [Timeout div 1000]),
     State1 = mod_stream_mgmt:set_resume_timeout(State, Timeout),
     State1#{push_resume_timeout_orig => OrigTimeout}.
 
 -spec maybe_restore_resume_timeout(c2s_state()) -> c2s_state().
 maybe_restore_resume_timeout(#{push_resume_timeout_orig := Timeout} = State) ->
-    ?DEBUG("Restoring resume timeout to ~B seconds", [Timeout]),
+    ?DEBUG("Restoring resume timeout to ~B seconds", [Timeout div 1000]),
     State1 = mod_stream_mgmt:set_resume_timeout(State, Timeout),
     maps:remove(push_resume_timeout_orig, State1);
 maybe_restore_resume_timeout(State) ->
@@ -218,15 +216,15 @@ maybe_restore_resume_timeout(State) ->
 -spec maybe_start_wakeup_timer(c2s_state()) -> c2s_state().
 maybe_start_wakeup_timer(#{push_wake_on_timeout := true,
 			   push_resume_timeout := ResumeTimeout} = State)
-  when is_integer(ResumeTimeout), ResumeTimeout > ?PUSH_BEFORE_TIMEOUT_SECS ->
-    WakeTimeout = ResumeTimeout - ?PUSH_BEFORE_TIMEOUT_SECS,
-    ?DEBUG("Scheduling wake-up timer to fire in ~B seconds", [WakeTimeout]),
-    erlang:start_timer(timer:seconds(WakeTimeout), self(), push_keepalive),
+  when is_integer(ResumeTimeout), ResumeTimeout > ?PUSH_BEFORE_TIMEOUT_PERIOD ->
+    WakeTimeout = ResumeTimeout - ?PUSH_BEFORE_TIMEOUT_PERIOD,
+    ?DEBUG("Scheduling wake-up timer to fire in ~B seconds", [WakeTimeout div 1000]),
+    erlang:start_timer(WakeTimeout, self(), push_keepalive),
     State;
 maybe_start_wakeup_timer(State) ->
     State.
 
--spec wake_all(binary()) -> ok | error.
+-spec wake_all(binary()) -> ok.
 wake_all(LServer) ->
     ?INFO_MSG("Waking all push clients on ~s", [LServer]),
     Mod = gen_mod:db_mod(LServer, mod_push),
@@ -239,5 +237,5 @@ wake_all(LServer) ->
 						  IgnoreResponse)
 			  end, Sessions);
 	error ->
-	    error
+	    ok
     end.

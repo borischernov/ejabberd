@@ -31,7 +31,7 @@
 %% API
 -export([start/1, stop/1, reload/1, start_link/2]).
 -export([check_password/3, set_password/3, try_register/3, remove_user/2,
-	 remove_user/3, user_exists/2]).
+	 remove_user/3, user_exists/2, check_certificate/3]).
 -export([prog_name/1, pool_name/1, worker_name/2, pool_size/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
@@ -61,6 +61,9 @@ start_link(Name, Prog) ->
 check_password(User, Server, Password) ->
     call_port(Server, [<<"auth">>, User, Server, Password]).
 
+check_certificate(User, Server, Certificate) ->
+    call_port(Server, [<<"certauth">>, User, Server, Certificate]).
+
 user_exists(User, Server) ->
     call_port(Server, [<<"isuser">>, User, Server]).
 
@@ -78,11 +81,11 @@ remove_user(User, Server, Password) ->
 
 -spec prog_name(binary()) -> string() | undefined.
 prog_name(Host) ->
-    ejabberd_config:get_option({extauth_program, Host}).
+    ejabberd_option:extauth_program(Host).
 
 -spec pool_name(binary()) -> atom().
 pool_name(Host) ->
-    case ejabberd_config:get_option({extauth_pool_name, Host}) of
+    case ejabberd_option:extauth_pool_name(Host) of
 	undefined ->
 	    list_to_atom("extauth_pool_" ++ binary_to_list(Host));
 	Name ->
@@ -95,7 +98,7 @@ worker_name(Pool, N) ->
 
 -spec pool_size(binary()) -> pos_integer().
 pool_size(Host) ->
-    case ejabberd_config:get_option({extauth_pool_size, Host}) of
+    case ejabberd_option:extauth_pool_size(Host) of
 	undefined ->
 	    try erlang:system_info(logical_processors)
 	    catch _:_ -> 1

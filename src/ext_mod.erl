@@ -25,7 +25,6 @@
 
 -module(ext_mod).
 
--behaviour(ejabberd_config).
 -behaviour(gen_server).
 -author("Christophe Romain <christophe.romain@process-one.net>").
 
@@ -34,7 +33,7 @@
          installed_command/0, installed/0, installed/1,
          install/1, uninstall/1, upgrade/0, upgrade/1, add_paths/0,
          add_sources/1, add_sources/2, del_sources/1, modules_dir/0,
-         config_dir/0, opt_type/1, get_commands_spec/0]).
+         config_dir/0, get_commands_spec/0]).
 
 -export([compile_erlang_file/2, compile_elixir_file/2]).
 
@@ -64,14 +63,16 @@ add_paths() ->
     [code:add_patha(module_ebin_dir(Module))
      || {Module, _} <- installed()].
 
-handle_call(_Request, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State}.
-
-handle_cast(_Msg, State) ->
+handle_call(Request, From, State) ->
+    ?WARNING_MSG("Unexpected call from ~p: ~p", [From, Request]),
     {noreply, State}.
 
-handle_info(_Info, State) ->
+handle_cast(Msg, State) ->
+    ?WARNING_MSG("Unexpected cast: ~p", [Msg]),
+    {noreply, State}.
+
+handle_info(Info, State) ->
+    ?WARNING_MSG("Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -221,7 +222,7 @@ install(Package) when is_binary(Package) ->
             case compile_and_install(Module, Attrs) of
                 ok ->
                     code:add_patha(module_ebin_dir(Module)),
-                    ejabberd_config:reload_file(),
+                    ejabberd_config:reload(),
                     case erlang:function_exported(Module, post_install, 0) of
                         true -> Module:post_install();
                         _ -> ok
@@ -243,12 +244,12 @@ uninstall(Package) when is_binary(Package) ->
                 _ -> ok
             end,
             [catch gen_mod:stop_module(Host, Module)
-             || Host <- ejabberd_config:get_myhosts()],
+             || Host <- ejabberd_option:hosts()],
             code:purge(Module),
             code:delete(Module),
             code:del_path(module_ebin_dir(Module)),
             delete_path(module_lib_dir(Module)),
-            ejabberd_config:reload_file();
+            ejabberd_config:reload();
         false ->
             {error, not_installed}
     end.
@@ -464,7 +465,7 @@ short_spec({Module, Attrs}) when is_atom(Module), is_list(Attrs) ->
     {Module, proplists:get_value(summary, Attrs, "")}.
 
 is_contrib_allowed() ->
-    ejabberd_config:get_option(allow_contrib_modules, true).
+    ejabberd_option:allow_contrib_modules().
 
 %% -- build functions
 
@@ -597,6 +598,7 @@ compile_erlang_file(Dest, File, ErlOptions) ->
         {error, E, W} -> {error, {compilation_failed, File, E, W}}
     end.
 
+-ifdef(ELIXIR_ENABLED).
 compile_elixir_file(Dest, File) when is_list(Dest) and is_list(File) ->
   compile_elixir_file(list_to_binary(Dest), list_to_binary(File));
 
@@ -606,6 +608,10 @@ compile_elixir_file(Dest, File) ->
   catch
     _ -> {error, {compilation_failed, File}}
   end.
+-else.
+compile_elixir_file(_, File) ->
+    {error, {compilation_failed, File}}.
+-endif.
 
 install(Module, Spec, SrcDir, LibDir) ->
     {ok, CurDir} = file:get_cwd(),
@@ -682,11 +688,3 @@ format({Key, Val}) when is_binary(Val) ->
     {Key, binary_to_list(Val)};
 format({Key, Val}) -> % TODO: improve Yaml parsing
     {Key, Val}.
-
--spec opt_type(atom()) -> fun((any()) -> any()) | [atom()].
-opt_type(allow_contrib_modules) ->
-    fun (false) -> false;
-        (no) -> false;
-        (_) -> true
-    end;
-opt_type(_) -> [allow_contrib_modules].

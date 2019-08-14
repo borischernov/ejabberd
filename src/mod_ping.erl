@@ -37,6 +37,8 @@
 
 -include("xmpp.hrl").
 
+-include("translate.hrl").
+
 %% API
 -export([start_ping/2, stop_ping/2]).
 
@@ -51,12 +53,14 @@
 	 user_send/1, mod_opt_type/1, mod_options/1, depends/2]).
 
 -record(state,
-	{host = <<"">>       :: binary(),
+	{host                :: binary(),
          send_pings          :: boolean(),
-	 ping_interval       :: non_neg_integer(),
+	 ping_interval       :: pos_integer(),
 	 ping_ack_timeout    :: undefined | non_neg_integer(),
-	 timeout_action      ::none | kill,
-         timers = maps:new() :: map()}).
+	 timeout_action      :: none | kill,
+         timers              :: timers()}).
+
+-type timers() :: #{ljid() => reference()}.
 
 %%====================================================================
 %% API
@@ -87,8 +91,9 @@ reload(Host, NewOpts, OldOpts) ->
 %%====================================================================
 %% gen_server callbacks
 %%====================================================================
-init([Host, Opts]) ->
+init([Host|_]) ->
     process_flag(trap_exit, true),
+    Opts = gen_mod:get_module_opts(Host, ?MODULE),
     State = init_state(Host, Opts),
     register_iq_handlers(Host),
     case State#state.send_pings of
@@ -103,8 +108,9 @@ terminate(_Reason, #state{host = Host}) ->
 
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
-handle_call(_Req, _From, State) ->
-    {reply, {error, badarg}, State}.
+handle_call(Request, From, State) ->
+    ?WARNING_MSG("Unexpected call from ~p: ~p", [From, Request]),
+    {noreply, State}.
 
 handle_cast({reload, Host, NewOpts, _OldOpts},
 	    #state{timers = Timers} = OldState) ->
@@ -123,7 +129,7 @@ handle_cast({stop_ping, JID}, State) ->
     Timers = del_timer(JID, State#state.timers),
     {noreply, State#state{timers = Timers}};
 handle_cast(Msg, State) ->
-    ?WARNING_MSG("unexpected cast: ~p", [Msg]),
+    ?WARNING_MSG("Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 handle_info({iq_reply, #iq{type = error}, JID}, State) ->
@@ -158,7 +164,9 @@ handle_info({timeout, _TRef, {ping, JID}}, State) ->
     Timers = add_timer(JID, State#state.ping_interval,
 		       State#state.timers),
     {noreply, State#state{timers = Timers}};
-handle_info(_Info, State) -> {noreply, State}.
+handle_info(Info, State) ->
+    ?WARNING_MSG("Unexpected info: ~p", [Info]),
+    {noreply, State}.
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
@@ -169,7 +177,7 @@ code_change(_OldVsn, State, _Extra) -> {ok, State}.
 iq_ping(#iq{type = get, sub_els = [#ping{}]} = IQ) ->
     xmpp:make_iq_result(IQ);
 iq_ping(#iq{lang = Lang} = IQ) ->
-    Txt = <<"Ping query is incorrect">>,
+    Txt = ?T("Ping query is incorrect"),
     xmpp:make_error(IQ, xmpp:err_bad_request(Txt, Lang)).
 
 -spec user_online(ejabberd_sm:sid(), jid(), ejabberd_sm:info()) -> ok.
@@ -189,16 +197,16 @@ user_send({Packet, #{jid := JID} = C2SState}) ->
 %% Internal functions
 %%====================================================================
 init_state(Host, Opts) ->
-    SendPings = gen_mod:get_opt(send_pings, Opts),
-    PingInterval = gen_mod:get_opt(ping_interval, Opts),
-    PingAckTimeout = gen_mod:get_opt(ping_ack_timeout, Opts),
-    TimeoutAction = gen_mod:get_opt(timeout_action, Opts),
+    SendPings = mod_ping_opt:send_pings(Opts),
+    PingInterval = mod_ping_opt:ping_interval(Opts),
+    PingAckTimeout = mod_ping_opt:ping_ack_timeout(Opts),
+    TimeoutAction = mod_ping_opt:timeout_action(Opts),
     #state{host = Host,
 	   send_pings = SendPings,
 	   ping_interval = PingInterval,
 	   timeout_action = TimeoutAction,
 	   ping_ack_timeout = PingAckTimeout,
-	   timers = maps:new()}.
+	   timers = #{}}.
 
 register_hooks(Host) ->
     ejabberd_hooks:add(sm_register_connection_hook, Host,
@@ -226,7 +234,7 @@ unregister_iq_handlers(Host) ->
     gen_iq_handler:remove_iq_handler(ejabberd_local, Host, ?NS_PING),
     gen_iq_handler:remove_iq_handler(ejabberd_sm, Host, ?NS_PING).
 
--spec add_timer(jid(), non_neg_integer(), map()) -> map().
+-spec add_timer(jid(), pos_integer(), timers()) -> timers().
 add_timer(JID, Interval, Timers) ->
     LJID = jid:tolower(JID),
     NewTimers = case maps:find(LJID, Timers) of
@@ -235,11 +243,10 @@ add_timer(JID, Interval, Timers) ->
           maps:remove(LJID, Timers);
       _ -> Timers
 		end,
-    TRef = erlang:start_timer(Interval * 1000, self(),
-			      {ping, JID}),
+    TRef = erlang:start_timer(Interval, self(), {ping, JID}),
     maps:put(LJID, TRef, NewTimers).
 
--spec del_timer(jid(), map()) -> map().
+-spec del_timer(jid(), timers()) -> timers().
 del_timer(JID, Timers) ->
     LJID = jid:tolower(JID),
     case maps:find(LJID, Timers) of
@@ -253,20 +260,16 @@ depends(_Host, _Opts) ->
     [].
 
 mod_opt_type(ping_interval) ->
-    fun (I) when is_integer(I), I > 0 -> I end;
+    econf:timeout(second);
 mod_opt_type(ping_ack_timeout) ->
-    fun(undefined) -> undefined;
-       (I) when is_integer(I), I>0 -> timer:seconds(I)
-    end;
+    econf:timeout(second);
 mod_opt_type(send_pings) ->
-    fun (B) when is_boolean(B) -> B end;
+    econf:bool();
 mod_opt_type(timeout_action) ->
-    fun (none) -> none;
-	(kill) -> kill
-    end.
+    econf:enum([none, kill]).
 
 mod_options(_Host) ->
-    [{ping_interval, 60},
+    [{ping_interval, timer:minutes(1)},
      {ping_ack_timeout, undefined},
      {send_pings, false},
      {timeout_action, none}].

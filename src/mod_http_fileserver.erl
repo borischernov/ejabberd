@@ -110,7 +110,8 @@ depends(_Host, _Opts) ->
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
-init([Host, Opts]) ->
+init([Host|_]) ->
+    Opts = gen_mod:get_module_opts(Host, ?MODULE),
     try initialize(Host, Opts) of
 	State ->
 	    process_flag(trap_exit, true),
@@ -121,22 +122,22 @@ init([Host, Opts]) ->
     end.
 
 initialize(Host, Opts) ->
-    DocRoot = gen_mod:get_opt(docroot, Opts),
-    AccessLog = gen_mod:get_opt(accesslog, Opts),
+    DocRoot = mod_http_fileserver_opt:docroot(Opts),
+    AccessLog = mod_http_fileserver_opt:accesslog(Opts),
     AccessLogFD = try_open_log(AccessLog, Host),
-    DirectoryIndices = gen_mod:get_opt(directory_indices, Opts),
-    CustomHeaders = gen_mod:get_opt(custom_headers, Opts),
-    DefaultContentType = gen_mod:get_opt(default_content_type, Opts),
-    UserAccess0 = gen_mod:get_opt(must_authenticate_with, Opts),
+    DirectoryIndices = mod_http_fileserver_opt:directory_indices(Opts),
+    CustomHeaders = mod_http_fileserver_opt:custom_headers(Opts),
+    DefaultContentType = mod_http_fileserver_opt:default_content_type(Opts),
+    UserAccess0 = mod_http_fileserver_opt:must_authenticate_with(Opts),
     UserAccess = case UserAccess0 of
 		     [] -> none;
 		     _ ->
-			 dict:from_list(UserAccess0)
+			 maps:from_list(UserAccess0)
 		 end,
     ContentTypes = build_list_content_types(
-                     gen_mod:get_opt(content_types, Opts),
+                     mod_http_fileserver_opt:content_types(Opts),
                      ?DEFAULT_CONTENT_TYPES),
-    ?DEBUG("known content types: ~s",
+    ?DEBUG("Known content types: ~s",
 	   [str:join([[$*, K, " -> ", V] || {K, V} <- ContentTypes],
 		     <<", ">>)]),
     #state{host = Host,
@@ -198,8 +199,9 @@ handle_call({serve, LocalPath, Auth, RHeaders}, _From, State) ->
 		  State#state.default_content_type, State#state.content_types,
 		  State#state.user_access, IfModifiedSince),
     {reply, Reply, State};
-handle_call(_Request, _From, State) ->
-    {reply, ok, State}.
+handle_call(Request, From, State) ->
+    ?WARNING_MSG("Unexpected call from ~p: ~p", [From, Request]),
+    {noreply, State}.
 
 %%--------------------------------------------------------------------
 %% Function: handle_cast(Msg, State) -> {noreply, State} |
@@ -222,7 +224,7 @@ handle_cast({reload, Host, NewOpts, _OldOpts}, OldState) ->
 	    {noreply, OldState}
     end;
 handle_cast(Msg, State) ->
-    ?WARNING_MSG("unexpected cast: ~p", [Msg]),
+    ?WARNING_MSG("Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -231,7 +233,8 @@ handle_cast(Msg, State) ->
 %%                                       {stop, Reason, State}
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
-handle_info(_Info, State) ->
+handle_info(Info, State) ->
+    ?WARNING_MSG("Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -241,11 +244,14 @@ handle_info(_Info, State) ->
 %% cleaning up. When it returns, the gen_server terminates with Reason.
 %% The return value is ignored.
 %%--------------------------------------------------------------------
-terminate(_Reason, State) ->
+terminate(_Reason, #state{host = Host} = State) ->
     close_log(State#state.accesslogfd),
-    %% TODO: unregister the hook gracefully
-    %% ejabberd_hooks:delete(reopen_log_hook, State#state.host, ?MODULE, reopen_log, 50),
-    ok.
+    case gen_mod:is_loaded_elsewhere(Host, ?MODULE) of
+	false ->
+	    ejabberd_hooks:delete(reopen_log_hook, ?MODULE, reopen_log, 50);
+	true ->
+	    ok
+    end.
 
 %%--------------------------------------------------------------------
 %% Func: code_change(OldVsn, State, Extra) -> {ok, NewState}
@@ -285,7 +291,7 @@ serve(LocalPath, Auth, DocRoot, DirectoryIndices, CustomHeaders, DefaultContentT
     CanProceed = case {UserAccess, Auth} of
 		     {none, _} -> true;
 		     {_, {User, Pass}} ->
-			 case dict:find(User, UserAccess) of
+			 case maps:find(User, UserAccess) of
 			     {ok, Pass} -> true;
 			     _ -> false
 			 end;
@@ -320,9 +326,7 @@ serve(LocalPath, Auth, DocRoot, DirectoryIndices, CustomHeaders, DefaultContentT
 				       DefaultContentType,
 				       ContentTypes)
 		    end
-	    end;
-	_ ->
-	    ?HTTP_ERR_FORBIDDEN
+	    end
     end.
 
 %% Troll through the directory indices attempting to find one which
@@ -382,7 +386,7 @@ reopen_log() ->
     lists:foreach(
       fun(Host) ->
 	      gen_server:cast(get_proc_name(Host), reopen_log)
-      end, ejabberd_config:get_myhosts()).
+      end, ejabberd_option:hosts()).
 
 add_to_log(FileSize, Code, Request) ->
     gen_server:cast(get_proc_name(Request#request.host),
@@ -404,7 +408,7 @@ add_to_log(File, FileSize, Code, Request) ->
     Referer = find_header('Referer', Request#request.headers, "-"),
     %% Pseudo Combined Apache log format:
     %% 127.0.0.1 - - [28/Mar/2007:18:41:55 +0200] "GET / HTTP/1.1" 302 303 "-" "tsung"
-    %% TODO some fields are harcoded/missing:
+    %% TODO some fields are hardcoded/missing:
     %%   The date/time integers should have always 2 digits. For example day "7" should be "07"
     %%   Month should be 3*letter, not integer 1..12
     %%   Missing time zone = (`+' | `-') 4*digit
@@ -464,43 +468,27 @@ ip_to_string(Address) when size(Address) == 8 ->
     string:to_lower(lists:flatten(join(Parts, ":"))).
 
 mod_opt_type(accesslog) ->
-    fun(undefined) -> undefined;
-       (File) -> iolist_to_binary(File)
-    end;
+    econf:file(write);
 mod_opt_type(content_types) ->
-    fun(L) when is_list(L) ->
-	    lists:map(
-	      fun({K, V}) ->
-		      {iolist_to_binary(K),
-		       iolist_to_binary(V)}
-	      end, L)
-    end;
+    econf:map(econf:binary(), econf:binary());
 mod_opt_type(custom_headers) ->
-    fun (L) when is_list(L) -> L end;
+    econf:map(econf:binary(), econf:binary());
 mod_opt_type(default_content_type) ->
-    fun iolist_to_binary/1;
+    econf:binary();
 mod_opt_type(directory_indices) ->
-    fun (L) when is_list(L) -> L end;
+    econf:list(econf:binary());
 mod_opt_type(docroot) ->
-    fun(S) ->
-	    Path = iolist_to_binary(S),
-	    case filelib:ensure_dir(filename:join(Path, "foo")) of
-		ok ->
-		    Path;
-		{error, Why} ->
-		    ?ERROR_MSG("Failed to create directory ~s: ~s",
-			       [Path, file:format_error(Why)]),
-		    erlang:error(badarg)
-	    end
-    end;
+    econf:directory(write);
 mod_opt_type(must_authenticate_with) ->
-    fun (L) when is_list(L) ->
-	    lists:map(fun(UP) when is_binary(UP) ->
-			      [K, V] = binary:split(UP, <<":">>),
-			      {K, V}
-		      end, L)
-    end.
+    econf:list(
+      econf:and_then(
+	econf:and_then(
+	  econf:binary("^[^:]+:[^:]+$"),
+	  econf:binary_sep(":")),
+	fun([K, V]) -> {K, V} end)).
 
+-spec mod_options(binary()) -> [{must_authenticate_with, [{binary(), binary()}]} |
+				{atom(), any()}].
 mod_options(_) ->
     [{accesslog, undefined},
      {content_types, []},

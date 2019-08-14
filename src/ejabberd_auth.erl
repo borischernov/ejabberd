@@ -1,7 +1,7 @@
 %%%----------------------------------------------------------------------
 %%% File    : ejabberd_auth.erl
 %%% Author  : Alexey Shchepin <alexey@process-one.net>
-%%% Purpose : Authentification
+%%% Purpose : Authentication
 %%% Created : 23 Nov 2002 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
@@ -25,7 +25,6 @@
 -module(ejabberd_auth).
 
 -behaviour(gen_server).
--behaviour(ejabberd_config).
 
 -author('alexey@process-one.net').
 
@@ -47,15 +46,16 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
 
--export([auth_modules/1, opt_type/1]).
+-export([auth_modules/1]).
 
 -include("scram.hrl").
 -include("logger.hrl").
 
 -define(SALT_LENGTH, 16).
 
--record(state, {host_modules = #{} :: map()}).
+-record(state, {host_modules = #{} :: host_modules()}).
 
+-type host_modules() :: #{binary => [module()]}.
 -type password() :: binary() | #scram{}.
 -type digest_fun() :: fun((binary()) -> binary()).
 -export_type([password/0]).
@@ -72,14 +72,16 @@
 -callback reload(binary()) -> any().
 -callback plain_password_required(binary()) -> boolean().
 -callback store_type(binary()) -> plain | external | scram.
--callback set_password(binary(), binary(), binary()) -> ok | {error, atom()}.
--callback remove_user(binary(), binary()) -> ok | {error, any()}.
--callback user_exists(binary(), binary()) -> boolean() | {error, atom()}.
--callback check_password(binary(), binary(), binary(), binary()) -> boolean().
--callback try_register(binary(), binary(), password()) -> ok | {error, atom()}.
+-callback set_password(binary(), binary(), password()) ->
+    {ets_cache:tag(), {ok, password()} | {error, db_failure | not_allowed}}.
+-callback remove_user(binary(), binary()) -> ok | {error, db_failure | not_allowed}.
+-callback user_exists(binary(), binary()) -> {ets_cache:tag(), boolean() | {error, db_failure}}.
+-callback check_password(binary(), binary(), binary(), binary()) -> {ets_cache:tag(), boolean()}.
+-callback try_register(binary(), binary(), password()) ->
+    {ets_cache:tag(), {ok, password()} | {error, exists | db_failure | not_allowed}}.
 -callback get_users(binary(), opts()) -> [{binary(), binary()}].
 -callback count_users(binary(), opts()) -> number().
--callback get_password(binary(), binary()) -> {ok, password()} | error.
+-callback get_password(binary(), binary()) -> {ets_cache:tag(), {ok, password()} | error}.
 -callback use_cache(binary()) -> boolean().
 -callback cache_nodes(binary()) -> boolean().
 
@@ -107,7 +109,7 @@ init([]) ->
 		    fun(Host, Acc) ->
 			    Modules = auth_modules(Host),
 			    maps:put(Host, Modules, Acc)
-		    end, #{}, ejabberd_config:get_myhosts()),
+		    end, #{}, ejabberd_option:hosts()),
     lists:foreach(
       fun({Host, Modules}) ->
 	      start(Host, Modules)
@@ -115,9 +117,9 @@ init([]) ->
     init_cache(HostModules),
     {ok, #state{host_modules = HostModules}}.
 
-handle_call(_Request, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State}.
+handle_call(Request, From, State) ->
+    ?WARNING_MSG("Unexpected call from ~p: ~p", [From, Request]),
+    {noreply, State}.
 
 handle_cast({host_up, Host}, #state{host_modules = HostModules} = State) ->
     Modules = auth_modules(Host),
@@ -141,19 +143,20 @@ handle_cast(config_reloaded, #state{host_modules = HostModules} = State) ->
 		  stop(Host, OldModules -- NewModules),
 		  reload(Host, misc:intersection(OldModules, NewModules)),
 		  maps:put(Host, NewModules, Acc)
-	  end, HostModules, ejabberd_config:get_myhosts()),
+	  end, HostModules, ejabberd_option:hosts()),
     init_cache(NewHostModules),
     {noreply, State#state{host_modules = NewHostModules}};
 handle_cast(Msg, State) ->
-    ?WARNING_MSG("unexpected cast: ~p", [Msg]),
+    ?WARNING_MSG("Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
-handle_info(_Info, State) ->
+handle_info(Info, State) ->
+    ?WARNING_MSG("Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, State) ->
-    ejabberd_hooks:delete(host_up, ?MODULE, start, 30),
-    ejabberd_hooks:delete(host_down, ?MODULE, stop, 80),
+    ejabberd_hooks:delete(host_up, ?MODULE, host_up, 30),
+    ejabberd_hooks:delete(host_down, ?MODULE, host_down, 80),
     ejabberd_hooks:delete(config_reloaded, ?MODULE, config_reloaded, 40),
     lists:foreach(
       fun({Host, Modules}) ->
@@ -250,7 +253,9 @@ check_password_with_authmodule(User, AuthzId, Server, Password, Digest, DigestGe
 	    false
     end.
 
--spec set_password(binary(), binary(), password()) -> ok | {error, atom()}.
+-spec set_password(binary(), binary(), password()) -> ok | {error,
+							    db_failure | not_allowed |
+							    invalid_jid | invalid_password}.
 set_password(User, Server, Password) ->
     case validate_credentials(User, Server, Password) of
 	{ok, LUser, LServer} ->
@@ -264,7 +269,9 @@ set_password(User, Server, Password) ->
 	    Err
     end.
 
--spec try_register(binary(), binary(), password()) -> ok | {error, atom()}.
+-spec try_register(binary(), binary(), password()) -> ok | {error,
+							    db_failure | not_allowed | exists |
+							    invalid_jid | invalid_password}.
 try_register(User, Server, Password) ->
     case validate_credentials(User, Server, Password) of
 	{ok, LUser, LServer} ->
@@ -530,11 +537,12 @@ backend_type(Mod) ->
 
 -spec password_format(binary() | global) -> plain | scram.
 password_format(LServer) ->
-    ejabberd_config:get_option({auth_password_format, LServer}, plain).
+    ejabberd_option:auth_password_format(LServer).
 
 %%%----------------------------------------------------------------------
 %%% Backend calls
 %%%----------------------------------------------------------------------
+-spec db_try_register(binary(), binary(), password(), module()) -> ok | {error, exists | db_failure | not_allowed}.
 db_try_register(User, Server, Password, Mod) ->
     case erlang:function_exported(Mod, try_register, 3) of
 	true ->
@@ -542,22 +550,24 @@ db_try_register(User, Server, Password, Mod) ->
 			    scram -> password_to_scram(Password);
 			    _ -> Password
 			end,
-	    case use_cache(Mod, Server) of
-		true ->
-		    case ets_cache:update(
-			   cache_tab(Mod), {User, Server}, {ok, Password},
-			   fun() -> Mod:try_register(User, Server, Password1) end,
-			   cache_nodes(Mod, Server)) of
-			{ok, _} -> ok;
-			{error, _} = Err -> Err
-		    end;
-		false ->
-		    ets_cache:untag(Mod:try_register(User, Server, Password1))
+	    Ret = case use_cache(Mod, Server) of
+		      true ->
+			  ets_cache:update(
+			    cache_tab(Mod), {User, Server}, {ok, Password},
+			    fun() -> Mod:try_register(User, Server, Password1) end,
+			    cache_nodes(Mod, Server));
+		      false ->
+			  ets_cache:untag(Mod:try_register(User, Server, Password1))
+		  end,
+	    case Ret of
+		{ok, _} -> ok;
+		{error, _} = Err -> Err
 	    end;
 	false ->
 	    {error, not_allowed}
     end.
 
+-spec db_set_password(binary(), binary(), password(), module()) -> ok | {error, db_failure | not_allowed}.
 db_set_password(User, Server, Password, Mod) ->
     case erlang:function_exported(Mod, set_password, 3) of
 	true ->
@@ -565,17 +575,18 @@ db_set_password(User, Server, Password, Mod) ->
 			    scram -> password_to_scram(Password);
 			    _ -> Password
 			end,
-	    case use_cache(Mod, Server) of
-		true ->
-		    case ets_cache:update(
-			   cache_tab(Mod), {User, Server}, {ok, Password},
-			   fun() -> Mod:set_password(User, Server, Password1) end,
-			   cache_nodes(Mod, Server)) of
-			{ok, _} -> ok;
-			{error, _} = Err -> Err
-		    end;
-		false ->
-		    ets_cache:untag(Mod:set_password(User, Server, Password1))
+	    Ret = case use_cache(Mod, Server) of
+		      true ->
+			  ets_cache:update(
+			    cache_tab(Mod), {User, Server}, {ok, Password},
+			    fun() -> Mod:set_password(User, Server, Password1) end,
+			    cache_nodes(Mod, Server));
+		      false ->
+			  ets_cache:untag(Mod:set_password(User, Server, Password1))
+		  end,
+	    case Ret of
+		{ok, _} -> ok;
+		{error, _} = Err -> Err
 	    end;
 	false ->
 	    {error, not_allowed}
@@ -610,9 +621,6 @@ db_user_exists(User, Server, Mod) ->
 			   cache_tab(Mod), {User, Server},
 			   fun() ->
 				   case Mod:user_exists(User, Server) of
-				       true -> {ok, exists};
-				       false -> error;
-				       {error, _} = Err -> Err;
 				       {CacheTag, true} -> {CacheTag, {ok, exists}};
 				       {CacheTag, false} -> {CacheTag, error};
 				       {_, {error, _}} = Err -> Err
@@ -645,8 +653,6 @@ db_check_password(User, AuthzId, Server, ProvidedPassword,
 			   fun() ->
 				   case Mod:check_password(
 					  User, AuthzId, Server, ProvidedPassword) of
-				       true -> {ok, ProvidedPassword};
-				       false -> error;
 				       {CacheTag, true} -> {CacheTag, {ok, ProvidedPassword}};
 				       {CacheTag, false} -> {CacheTag, error}
 				   end
@@ -667,7 +673,7 @@ db_check_password(User, AuthzId, Server, ProvidedPassword,
 db_remove_user(User, Server, Mod) ->
     case erlang:function_exported(Mod, remove_user, 2) of
 	true ->
-	    case ets_cache:untag(Mod:remove_user(User, Server)) of
+	    case Mod:remove_user(User, Server) of
 		ok ->
 		    case use_cache(Mod, Server) of
 			true ->
@@ -686,7 +692,7 @@ db_remove_user(User, Server, Mod) ->
 db_get_users(Server, Opts, Mod) ->
     case erlang:function_exported(Mod, get_users, 2) of
 	true ->
-	    ets_cache:untag(Mod:get_users(Server, Opts));
+	    Mod:get_users(Server, Opts);
 	false ->
 	    case use_cache(Mod, Server) of
 		true ->
@@ -704,7 +710,7 @@ db_get_users(Server, Opts, Mod) ->
 db_count_users(Server, Opts, Mod) ->
     case erlang:function_exported(Mod, count_users, 2) of
 	true ->
-	    ets_cache:untag(Mod:count_users(Server, Opts));
+	    Mod:count_users(Server, Opts);
 	false ->
 	    case use_cache(Mod, Server) of
 		true ->
@@ -752,7 +758,7 @@ password_to_scram(Password, IterationCount) ->
 %%%----------------------------------------------------------------------
 %%% Cache stuff
 %%%----------------------------------------------------------------------
--spec init_cache(map()) -> ok.
+-spec init_cache(host_modules()) -> ok.
 init_cache(HostModules) ->
     CacheOpts = cache_opts(),
     {True, False} = use_cache(HostModules),
@@ -767,21 +773,12 @@ init_cache(HostModules) ->
 
 -spec cache_opts() -> [proplists:property()].
 cache_opts() ->
-    MaxSize = ejabberd_config:get_option(
-		auth_cache_size,
-		ejabberd_config:cache_size(global)),
-    CacheMissed = ejabberd_config:get_option(
-		    auth_cache_missed,
-		    ejabberd_config:cache_missed(global)),
-    LifeTime = case ejabberd_config:get_option(
-		      auth_cache_life_time,
-		      ejabberd_config:cache_life_time(global)) of
-		   infinity -> infinity;
-		   I -> timer:seconds(I)
-	       end,
+    MaxSize = ejabberd_option:auth_cache_size(),
+    CacheMissed = ejabberd_option:auth_cache_missed(),
+    LifeTime = ejabberd_option:auth_cache_life_time(),
     [{max_size, MaxSize}, {cache_missed, CacheMissed}, {life_time, LifeTime}].
 
--spec use_cache(map()) -> {True :: [module()], False :: [module()]}.
+-spec use_cache(host_modules()) -> {True :: [module()], False :: [module()]}.
 use_cache(HostModules) ->
     {Enabled, Disabled} =
 	maps:fold(
@@ -803,9 +800,7 @@ use_cache(Mod, LServer) ->
     case erlang:function_exported(Mod, use_cache, 1) of
 	true -> Mod:use_cache(LServer);
 	false ->
-	    ejabberd_config:get_option(
-	      {auth_use_cache, LServer},
-	      ejabberd_config:use_cache(LServer))
+	    ejabberd_option:auth_use_cache(LServer)
     end.
 
 -spec cache_nodes(module(), binary()) -> [node()].
@@ -827,13 +822,12 @@ auth_modules() ->
     lists:flatmap(
       fun(Host) ->
 	      [{Host, Mod} || Mod <- auth_modules(Host)]
-      end, ejabberd_config:get_myhosts()).
+      end, ejabberd_option:hosts()).
 
 -spec auth_modules(binary()) -> [module()].
 auth_modules(Server) ->
     LServer = jid:nameprep(Server),
-    Default = ejabberd_config:default_db(LServer, ?MODULE),
-    Methods = ejabberd_config:get_option({auth_method, LServer}, [Default]),
+    Methods = ejabberd_option:auth_method(LServer),
     [ejabberd:module_name([<<"ejabberd">>, <<"auth">>,
 			   misc:atom_to_binary(M)])
      || M <- Methods].
@@ -907,35 +901,5 @@ import_start(_LServer, _) ->
 
 import(Server, {sql, _}, mnesia, <<"users">>, Fields) ->
     ejabberd_auth_mnesia:import(Server, Fields);
-import(Server, {sql, _}, riak, <<"users">>, Fields) ->
-    ejabberd_auth_riak:import(Server, Fields);
 import(_LServer, {sql, _}, sql, <<"users">>, _) ->
     ok.
-
--spec opt_type(atom()) -> fun((any()) -> any()) | [atom()].
-opt_type(auth_method) ->
-    fun (V) when is_list(V) ->
-	    lists:map(fun(M) -> ejabberd_config:v_db(?MODULE, M) end, V);
-	(V) -> [ejabberd_config:v_db(?MODULE, V)]
-    end;
-opt_type(auth_password_format) ->
-    fun (plain) -> plain;
-	(scram) -> scram
-    end;
-opt_type(auth_use_cache) ->
-    fun(B) when is_boolean(B) -> B end;
-opt_type(auth_cache_missed) ->
-    fun(B) when is_boolean(B) -> B end;
-opt_type(auth_cache_life_time) ->
-    fun(I) when is_integer(I), I>0 -> I;
-       (unlimited) -> infinity;
-       (infinity) -> infinity
-    end;
-opt_type(auth_cache_size) ->
-    fun(I) when is_integer(I), I>0 -> I;
-       (unlimited) -> infinity;
-       (infinity) -> infinity
-    end;
-opt_type(_) ->
-    [auth_method, auth_password_format, auth_use_cache,
-     auth_cache_missed, auth_cache_life_time, auth_cache_size].

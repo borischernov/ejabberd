@@ -468,7 +468,7 @@ history_master(Config) ->
     MyNick = ?config(nick, Config),
     MyNickJID = jid:replace_resource(Room, MyNick),
     PeerNickJID = peer_muc_jid(Config),
-    Size = gen_mod:get_module_opt(ServerHost, mod_muc, history_size, 20),
+    Size = mod_muc_opt:history_size(iolist_to_binary(ServerHost)),
     ok = join_new(Config),
     ct:comment("Putting ~p+1 messages in the history", [Size]),
     %% Only Size messages will be stored
@@ -496,7 +496,7 @@ history_slave(Config) ->
     PeerNick = ?config(peer_nick, Config),
     PeerNickJID = jid:replace_resource(Room, PeerNick),
     ServerHost = ?config(server_host, Config),
-    Size = gen_mod:get_module_opt(ServerHost, mod_muc, history_size, 20),
+    Size = mod_muc_opt:history_size(iolist_to_binary(ServerHost)),
     ct:comment("Waiting for 'join' command from the master"),
     join = get_event(Config),
     {History, _, _} = join(Config),
@@ -638,7 +638,7 @@ voice_request_master(Config) ->
      {roomnick, PeerNick}] = lists:sort(muc_request:decode(Fs)),
     ct:comment("Approving voice request"),
     ApprovalFs = muc_request:encode([{jid, PeerJID}, {role, participant},
-				     {nick, PeerNick}, {request_allow, true}]),
+				     {roomnick, PeerNick}, {request_allow, true}]),
     send(Config, #message{to = Room, sub_els = [#xdata{type = submit,
 						       fields = ApprovalFs}]}),
     #muc_user{
@@ -1449,7 +1449,7 @@ config_voice_request_interval_master(Config) ->
     #message{from = Room, type = normal} = recv_message(Config),
     ct:comment("Deny voice request at first"),
     Fs = muc_request:encode([{jid, PeerJID}, {role, participant},
-			     {nick, PeerNick}, {request_allow, false}]),
+			     {roomnick, PeerNick}, {request_allow, false}]),
     send(Config, #message{to = Room, sub_els = [#xdata{type = submit,
                                                        fields = Fs}]}),
     put_event(Config, denied),
@@ -1785,7 +1785,7 @@ master_join(Config) ->
     wait_for_slave(Config),
     #muc_user{items = [#muc_item{jid = PeerJID,
 				 role = participant,
-				 affiliation = none}]} = 
+				 affiliation = none}]} =
 	recv_muc_presence(Config, PeerNickJID, available),
     ok.
 

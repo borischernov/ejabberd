@@ -41,9 +41,19 @@
 
 -include("logger.hrl").
 -include("xmpp.hrl").
+-include("translate.hrl").
 
--record(state, {server_host = <<"">> :: binary(),
-		permissions = dict:new() :: dict:dict()}).
+-type roster_permission() :: both | get | set.
+-type presence_permission() :: managed_entity | roster.
+-type message_permission() :: outgoing.
+-type roster_permissions() :: [{roster_permission(), acl:acl()}].
+-type presence_permissions() :: [{presence_permission(), acl:acl()}].
+-type message_permissions() :: [{message_permission(), acl:acl()}].
+-type access() :: [{roster, roster_permissions()} |
+		   {presence, presence_permissions()} |
+		   {message, message_permissions()}].
+-type permissions() :: #{binary() => access()}.
+-record(state, {server_host = <<"">> :: binary()}).
 
 %%%===================================================================
 %%% API
@@ -57,9 +67,15 @@ stop(Host) ->
 reload(_Host, _NewOpts, _OldOpts) ->
     ok.
 
-mod_opt_type({roster, _}) -> fun acl:access_rules_validator/1;
-mod_opt_type({message, _}) -> fun acl:access_rules_validator/1;
-mod_opt_type({presence, _}) -> fun acl:access_rules_validator/1.
+mod_opt_type(roster) ->
+    econf:options(
+      #{both => econf:acl(), get => econf:acl(), set => econf:acl()});
+mod_opt_type(message) ->
+    econf:options(
+      #{outgoing => econf:acl()});
+mod_opt_type(presence) ->
+    econf:options(
+      #{managed_entity => econf:acl(), roster => econf:acl()}).
 
 mod_options(_) ->
     [{roster, [{both, none}, {get, none}, {set, none}]},
@@ -75,7 +91,7 @@ component_connected(Host) ->
       fun(ServerHost) ->
 	      Proc = gen_mod:get_module_proc(ServerHost, ?MODULE),
 	      gen_server:cast(Proc, {component_connected, Host})
-      end, ejabberd_config:get_myhosts()).
+      end, ejabberd_option:hosts()).
 
 -spec component_disconnected(binary(), binary()) -> ok.
 component_disconnected(Host, _Reason) ->
@@ -83,7 +99,7 @@ component_disconnected(Host, _Reason) ->
       fun(ServerHost) ->
 	      Proc = gen_mod:get_module_proc(ServerHost, ?MODULE),
 	      gen_server:cast(Proc, {component_disconnected, Host})
-      end, ejabberd_config:get_myhosts()).
+      end, ejabberd_option:hosts()).
 
 -spec process_message(stanza()) -> stop | ok.
 process_message(#message{from = #jid{luser = <<"">>, lresource = <<"">>} = From,
@@ -92,13 +108,13 @@ process_message(#message{from = #jid{luser = <<"">>, lresource = <<"">>} = From,
     Host = From#jid.lserver,
     ServerHost = To#jid.lserver,
     Permissions = get_permissions(ServerHost),
-    case dict:find(Host, Permissions) of
+    case maps:find(Host, Permissions) of
 	{ok, Access} ->
 	    case proplists:get_value(message, Access, none) of
 		outgoing ->
 		    forward_message(Msg);
 		_ ->
-		    Txt = <<"Insufficient privilege">>,
+		    Txt = ?T("Insufficient privilege"),
 		    Err = xmpp:err_forbidden(Txt, Lang),
 		    ejabberd_router:route_error(Msg, Err)
 	    end,
@@ -117,7 +133,7 @@ roster_access(false, #iq{from = From, to = To, type = Type}) ->
     Host = From#jid.lserver,
     ServerHost = To#jid.lserver,
     Permissions = get_permissions(ServerHost),
-    case dict:find(Host, Permissions) of
+    case maps:find(Host, Permissions) of
 	{ok, Access} ->
 	    Permission = proplists:get_value(roster, Access, none),
 	    (Permission == both)
@@ -146,7 +162,7 @@ process_presence_out({#presence{
 		 true ->
 		      ok
 	      end
-      end, dict:to_list(Permissions)),
+      end, maps:to_list(Permissions)),
     {Pres, C2SState};
 process_presence_out(Acc) ->
     Acc.
@@ -174,7 +190,7 @@ process_presence_in({#presence{
 		 _ ->
 		      ok
 	      end
-      end, dict:to_list(Permissions)),
+      end, maps:to_list(Permissions)),
     {Pres, C2SState};
 process_presence_in(Acc) ->
     Acc.
@@ -182,8 +198,11 @@ process_presence_in(Acc) ->
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
-init([Host, _Opts]) ->
+init([Host|_]) ->
     process_flag(trap_exit, true),
+    catch ets:new(?MODULE,
+                  [named_table, public,
+                   {heir, erlang:group_leader(), none}]),
     ejabberd_hooks:add(component_connected, ?MODULE,
                        component_connected, 50),
     ejabberd_hooks:add(component_disconnected, ?MODULE,
@@ -198,11 +217,9 @@ init([Host, _Opts]) ->
 		       process_presence_in, 50),
     {ok, #state{server_host = Host}}.
 
-handle_call(get_permissions, _From, State) ->
-    {reply, {ok, State#state.permissions}, State};
-handle_call(_Request, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State}.
+handle_call(Request, From, State) ->
+    ?WARNING_MSG("Unexpected call from ~p: ~p", [From, Request]),
+    {noreply, State}.
 
 handle_cast({component_connected, Host}, State) ->
     ServerHost = State#state.server_host,
@@ -224,29 +241,44 @@ handle_cast({component_connected, Host}, State) ->
 		      [Host, RosterPerm, PresencePerm, MessagePerm]),
 	    Msg = #message{from = From, to = To,  sub_els = [Priv]},
 	    ejabberd_router:route(Msg),
-	    Permissions = dict:store(Host, [{roster, RosterPerm},
-					    {presence, PresencePerm},
-					    {message, MessagePerm}],
-				     State#state.permissions),
-	    {noreply, State#state{permissions = Permissions}};
+	    Permissions = maps:put(Host, [{roster, RosterPerm},
+					  {presence, PresencePerm},
+					  {message, MessagePerm}],
+				   get_permissions(ServerHost)),
+	    ets:insert(?MODULE, {ServerHost, Permissions}),
+	    {noreply, State};
        true ->
 	    ?INFO_MSG("Granting no permissions to external component '~s'",
 		      [Host]),
 	    {noreply, State}
     end;
 handle_cast({component_disconnected, Host}, State) ->
-    Permissions = dict:erase(Host, State#state.permissions),
-    {noreply, State#state{permissions = Permissions}};
-handle_cast(_Msg, State) ->
+    ServerHost = State#state.server_host,
+    Permissions = maps:remove(Host, get_permissions(ServerHost)),
+    case maps:size(Permissions) of
+	0 -> ets:delete(?MODULE, ServerHost);
+	_ -> ets:insert(?MODULE, {ServerHost, Permissions})
+    end,
+    {noreply, State};
+handle_cast(Msg, State) ->
+    ?WARNING_MSG("Unexpected cast: ~p", [Msg]),
     {noreply, State}.
 
-handle_info(_Info, State) ->
+handle_info(Info, State) ->
+    ?WARNING_MSG("Unexpected info: ~p", [Info]),
     {noreply, State}.
 
 terminate(_Reason, State) ->
-    %% Note: we don't remove component_* hooks because they are global
-    %% and might be registered within a module on another virtual host
     Host = State#state.server_host,
+    case gen_mod:is_loaded_elsewhere(Host, ?MODULE) of
+	false ->
+	    ejabberd_hooks:delete(component_connected, ?MODULE,
+				  component_connected, 50),
+	    ejabberd_hooks:delete(component_disconnected, ?MODULE,
+				  component_disconnected, 50);
+	true ->
+	    ok
+    end,
     ejabberd_hooks:delete(local_send_to_resource_hook, Host, ?MODULE,
 			  process_message, 50),
     ejabberd_hooks:delete(roster_remote_access, Host, ?MODULE,
@@ -254,7 +286,8 @@ terminate(_Reason, State) ->
     ejabberd_hooks:delete(user_send_packet, Host, ?MODULE,
 			  process_presence_out, 50),
     ejabberd_hooks:delete(user_receive_packet, Host, ?MODULE,
-			  process_presence_in, 50).
+			  process_presence_in, 50),
+    ets:delete(?MODULE, Host).
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -262,20 +295,17 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+-spec get_permissions(binary()) -> permissions().
 get_permissions(ServerHost) ->
-    Proc = gen_mod:get_module_proc(ServerHost, ?MODULE),
-    try gen_server:call(Proc, get_permissions) of
-	{ok, Permissions} ->
-	    Permissions
-    catch exit:{noproc, _} ->
-	    %% No module is loaded for this virtual host
-	    dict:new()
+    try ets:lookup_element(?MODULE, ServerHost, 2)
+    catch _:badarg -> #{}
     end.
 
+-spec forward_message(message()) -> ok.
 forward_message(#message{to = To} = Msg) ->
     ServerHost = To#jid.lserver,
     Lang = xmpp:get_lang(Msg),
-    CodecOpts = ejabberd_config:codec_options(ServerHost),
+    CodecOpts = ejabberd_config:codec_options(),
     try xmpp:try_subtag(Msg, #privilege{}) of
 	#privilege{forwarded = #forwarded{sub_els = [SubEl]}} ->
 	    try xmpp:decode(SubEl, ?NS_CLIENT, CodecOpts) of
@@ -285,12 +315,12 @@ forward_message(#message{to = To} = Msg) ->
 			    ejabberd_router:route(NewMsg);
 			_ ->
 			    Lang = xmpp:get_lang(Msg),
-			    Txt = <<"Invalid 'from' attribute in forwarded message">>,
+			    Txt = ?T("Invalid 'from' attribute in forwarded message"),
 			    Err = xmpp:err_forbidden(Txt, Lang),
 			    ejabberd_router:route_error(Msg, Err)
 		    end;
 		_ ->
-		    Txt = <<"Message not found in forwarded payload">>,
+		    Txt = ?T("Message not found in forwarded payload"),
 		    Err = xmpp:err_bad_request(Txt, Lang),
 		    ejabberd_router:route_error(Msg, Err)
 	    catch _:{xmpp_codec, Why} ->
@@ -299,7 +329,7 @@ forward_message(#message{to = To} = Msg) ->
 		    ejabberd_router:route_error(Msg, Err)
 	    end;
 	_ ->
-	    Txt = <<"No <forwarded/> element found">>,
+	    Txt = ?T("No <forwarded/> element found"),
 	    Err = xmpp:err_bad_request(Txt, Lang),
 	    ejabberd_router:route_error(Msg, Err)
     catch _:{xmpp_codec, Why} ->
@@ -308,8 +338,9 @@ forward_message(#message{to = To} = Msg) ->
 	    ejabberd_router:route_error(Msg, Err)
     end.
 
+-spec get_roster_permission(binary(), binary()) -> roster_permission() | none.
 get_roster_permission(ServerHost, Host) ->
-    Perms = gen_mod:get_module_opt(ServerHost, ?MODULE, roster),
+    Perms = mod_privilege_opt:roster(ServerHost),
     case match_rule(ServerHost, Host, Perms, both) of
 	allow ->
 	    both;
@@ -323,15 +354,17 @@ get_roster_permission(ServerHost, Host) ->
 	    end
     end.
 
+-spec get_message_permission(binary(), binary()) -> message_permission() | none.
 get_message_permission(ServerHost, Host) ->
-    Perms = gen_mod:get_module_opt(ServerHost, ?MODULE, message),
+    Perms = mod_privilege_opt:message(ServerHost),
     case match_rule(ServerHost, Host, Perms, outgoing) of
 	allow -> outgoing;
 	deny -> none
     end.
 
+-spec get_presence_permission(binary(), binary()) -> presence_permission() | none.
 get_presence_permission(ServerHost, Host) ->
-    Perms = gen_mod:get_module_opt(ServerHost, ?MODULE, presence),
+    Perms = mod_privilege_opt:presence(ServerHost),
     case match_rule(ServerHost, Host, Perms, roster) of
 	allow ->
 	    roster;
@@ -342,6 +375,9 @@ get_presence_permission(ServerHost, Host) ->
 	    end
     end.
 
+-spec match_rule(binary(), binary(), roster_permissions(), roster_permission()) -> allow | deny;
+		(binary(), binary(), presence_permissions(), presence_permission()) -> allow | deny;
+		(binary(), binary(), message_permissions(), message_permission()) -> allow | deny.
 match_rule(ServerHost, Host, Perms, Type) ->
     Access = proplists:get_value(Type, Perms, none),
     acl:match_rule(ServerHost, Access, jid:make(Host)).

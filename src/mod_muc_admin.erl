@@ -50,6 +50,7 @@
 -include("ejabberd_http.hrl").
 -include("ejabberd_web_admin.hrl").
 -include("ejabberd_commands.hrl").
+-include("translate.hrl").
 
 %%----------------------------
 %% gen_mod
@@ -411,7 +412,7 @@ get_user_rooms(User, Server) ->
 		  false ->
 		      []
 	      end
-      end, ejabberd_config:get_myhosts()).
+      end, ejabberd_option:hosts()).
 
 %%----------------------------
 %% Ad-hoc commands
@@ -426,10 +427,10 @@ get_user_rooms(User, Server) ->
 %% Web Admin Menu
 
 web_menu_main(Acc, Lang) ->
-    Acc ++ [{<<"muc">>, ?T(<<"Multi-User Chat">>)}].
+    Acc ++ [{<<"muc">>, translate:translate(Lang, ?T("Multi-User Chat"))}].
 
 web_menu_host(Acc, _Host, Lang) ->
-    Acc ++ [{<<"muc">>, ?T(<<"Multi-User Chat">>)}].
+    Acc ++ [{<<"muc">>, translate:translate(Lang, ?T("Multi-User Chat"))}].
 
 
 %%---------------
@@ -445,13 +446,13 @@ web_page_main(_, #request{path=[<<"muc">>], lang = Lang} = _Request) ->
 			  fun(Host, Acc) ->
 				  Acc + mod_muc:count_online_rooms(Host)
 			  end, 0, find_hosts(global)),
-    Res = [?XCT(<<"h1">>, <<"Multi-User Chat">>),
-	   ?XCT(<<"h3">>, <<"Statistics">>),
+    Res = [?XCT(<<"h1">>, ?T("Multi-User Chat")),
+	   ?XCT(<<"h3">>, ?T("Statistics")),
 	   ?XAE(<<"table">>, [],
-		[?XE(<<"tbody">>, [?TDTD(<<"Total rooms">>, OnlineRoomsNumber)
+		[?XE(<<"tbody">>, [?TDTD(?T("Total rooms"), OnlineRoomsNumber)
 				  ])
 		]),
-	   ?XE(<<"ul">>, [?LI([?ACT(<<"rooms">>, <<"List of rooms">>)])])
+	   ?XE(<<"ul">>, [?LI([?ACT(<<"rooms">>, ?T("List of rooms"))])])
 	  ],
     {stop, Res};
 
@@ -517,8 +518,8 @@ make_rooms_page(Host, Lang, {Sort_direction, Sort_column}) ->
 	  end,
 	  1,
 	  Titles),
-    [?XCT(<<"h1">>, <<"Multi-User Chat">>),
-     ?XCT(<<"h2">>, <<"Chatrooms">>),
+    [?XCT(<<"h1">>, ?T("Multi-User Chat")),
+     ?XCT(<<"h2">>, ?T("Chatrooms")),
      ?XE(<<"table">>,
 	 [?XE(<<"thead">>,
 	      [?XE(<<"tr">>, Titles_TR)]
@@ -619,8 +620,7 @@ create_room_with_opts(Name1, Host1, ServerHost, CustomRoomOpts) ->
     true = (error /= (Host = jid:nodeprep(Host1))),
 
     %% Get the default room options from the muc configuration
-    DefRoomOpts = gen_mod:get_module_opt(ServerHost, mod_muc,
-					 default_room_options),
+    DefRoomOpts = mod_muc_opt:default_room_options(ServerHost),
     %% Change default room options as required
     FormattedRoomOpts = [format_room_option(Opt, Val) || {Opt, Val}<-CustomRoomOpts],
     RoomOpts = lists:ukeymerge(1,
@@ -631,14 +631,14 @@ create_room_with_opts(Name1, Host1, ServerHost, CustomRoomOpts) ->
     mod_muc:store_room(ServerHost, Host, Name, RoomOpts),
 
     %% Get all remaining mod_muc parameters that might be utilized
-    Access = gen_mod:get_module_opt(ServerHost, mod_muc, access),
-    AcCreate = gen_mod:get_module_opt(ServerHost, mod_muc, access_create),
-    AcAdmin = gen_mod:get_module_opt(ServerHost, mod_muc, access_admin),
-    AcPer = gen_mod:get_module_opt(ServerHost, mod_muc, access_persistent),
-    AcMam = gen_mod:get_module_opt(ServerHost, mod_muc, access_mam),
-    HistorySize = gen_mod:get_module_opt(ServerHost, mod_muc, history_size),
-    RoomShaper = gen_mod:get_module_opt(ServerHost, mod_muc, room_shaper),
-    QueueType = gen_mod:get_module_opt(ServerHost, mod_muc, queue_type),
+    Access = mod_muc_opt:access(ServerHost),
+    AcCreate = mod_muc_opt:access_create(ServerHost),
+    AcAdmin = mod_muc_opt:access_admin(ServerHost),
+    AcPer = mod_muc_opt:access_persistent(ServerHost),
+    AcMam = mod_muc_opt:access_mam(ServerHost),
+    HistorySize = mod_muc_opt:history_size(ServerHost),
+    RoomShaper = mod_muc_opt:room_shaper(ServerHost),
+    QueueType = mod_muc_opt:queue_type(ServerHost),
 
     %% If the room does not exist yet in the muc_online_room
     case mod_muc:find_online_room(Name, Host) of
@@ -673,8 +673,7 @@ muc_create_room(ServerHost, {Name, Host, _}, DefRoomOpts) ->
 destroy_room(Name, Service) ->
     case mod_muc:find_online_room(Name, Service) of
 	{ok, Pid} ->
-	    p1_fsm:send_all_state_event(Pid, destroy),
-	    ok;
+	    mod_muc_room:destroy(Pid);
 	error ->
 	    error
     end.
@@ -739,8 +738,7 @@ create_rooms_file(Filename) ->
     Rooms = read_rooms(F, RJID, []),
     file:close(F),
     %% Read the default room options defined for the first virtual host
-    DefRoomOpts = gen_mod:get_module_opt(ejabberd_config:get_myname(), mod_muc,
-					 default_room_options),
+    DefRoomOpts = mod_muc_opt:default_room_options(ejabberd_config:get_myname()),
     [muc_create_room(ejabberd_config:get_myname(), A, DefRoomOpts) || A <- Rooms],
 	ok.
 
@@ -794,11 +792,11 @@ get_rooms(ServerHost) ->
       end, Hosts).
 
 get_room_config(Room_pid) ->
-    {ok, R} = p1_fsm:sync_send_all_state_event(Room_pid, get_config),
+    {ok, R} = mod_muc_room:get_config(Room_pid),
     R.
 
 get_room_state(Room_pid) ->
-    {ok, R} = p1_fsm:sync_send_all_state_event(Room_pid, get_state),
+    {ok, R} = mod_muc_room:get_state(Room_pid),
     R.
 
 %%---------------
@@ -820,7 +818,7 @@ decide_room(unused, {_Room_name, _Host, Room_pid}, ServerHost, Last_allowed) ->
 
     History = (S#state.history)#lqueue.queue,
     Ts_now = calendar:universal_time(),
-    HistorySize = gen_mod:get_module_opt(ServerHost, mod_muc, history_size),
+    HistorySize = mod_muc_opt:history_size(ServerHost),
     {Has_hist, Last} = case p1_queue:is_empty(History) of
 			   true when (HistorySize == 0) or (Just_created == true) ->
 			       {false, 0};
@@ -865,7 +863,7 @@ seconds_to_days(S) ->
 %% Act
 
 act_on_rooms(Method, Action, Rooms, ServerHost) ->
-    ServerHosts = [ {A, find_host(A)} || A <- ejabberd_config:get_myhosts() ],
+    ServerHosts = [ {A, find_host(A)} || A <- ejabberd_option:hosts() ],
     Delete = fun({_N, H, _Pid} = Room) ->
 		     SH = case ServerHost of
 			      global -> find_serverhost(H, ServerHosts);
@@ -883,8 +881,7 @@ find_serverhost(Host, ServerHosts) ->
 act_on_room(Method, destroy, {N, H, Pid}, SH) ->
     Message = iolist_to_binary(io_lib:format(
         <<"Room destroyed by rooms_~s_destroy.">>, [Method])),
-    p1_fsm:send_all_state_event(
-      Pid, {destroy, Message}),
+    mod_muc_room:destroy(Pid, Message),
     mod_muc:room_destroyed(H, N, Pid, SH),
     mod_muc:forget_room(SH, H, N);
 
@@ -992,7 +989,7 @@ change_room_option(Name, Service, OptionString, ValueString) ->
 	    {Option, Value} = format_room_option(OptionString, ValueString),
 	    Config = get_room_config(Pid),
 	    Config2 = change_option(Option, Value, Config),
-	    {ok, _} = p1_fsm:sync_send_all_state_event(Pid, {change_config, Config2}),
+	    {ok, _} = mod_muc_room:set_config(Pid, Config2),
 	    ok
     end.
 
@@ -1026,7 +1023,7 @@ get_room_pid(Name, Service) ->
 	    Pid
     end.
 
-%% It is required to put explicitely all the options because
+%% It is required to put explicitly all the options because
 %% the record elements are replaced at compile time.
 %% So, this can't be parametrized.
 change_option(Option, Value, Config) ->
@@ -1094,7 +1091,7 @@ get_room_affiliations(Name, Service) ->
     case mod_muc:find_online_room(Name, Service) of
 	{ok, Pid} ->
 	    %% Get the PID of the online room, then request its state
-	    {ok, StateData} = p1_fsm:sync_send_all_state_event(Pid, get_state),
+	    {ok, StateData} = mod_muc_room:get_state(Pid),
 	    Affiliations = maps:to_list(StateData#state.affiliations),
 	    lists:map(
 	      fun({{Uname, Domain, _Res}, {Aff, Reason}}) when is_atom(Aff)->
@@ -1118,7 +1115,7 @@ get_room_affiliation(Name, Service, JID) ->
 	case mod_muc:find_online_room(Name, Service) of
 	{ok, Pid} ->
 		%% Get the PID of the online room, then request its state
-		{ok, StateData} = p1_fsm:sync_send_all_state_event(Pid, get_state),
+		{ok, StateData} = mod_muc_room:get_state(Pid),
 		UserJID = jid:decode(JID),
 		mod_muc_room:get_affiliation(UserJID, StateData);
 	error ->
@@ -1142,7 +1139,7 @@ set_room_affiliation(Name, Service, JID, AffiliationString) ->
     case mod_muc:find_online_room(Name, Service) of
 	{ok, Pid} ->
 	    %% Get the PID for the online room so we can get the state of the room
-	    {ok, StateData} = p1_fsm:sync_send_all_state_event(Pid, {process_item_change, {jid:decode(JID), affiliation, Affiliation, <<"">>}, undefined}),
+	    {ok, StateData} = mod_muc_room:change_item(Pid, jid:decode(JID), affiliation, Affiliation, <<"">>),
 	    mod_muc:store_room(StateData#state.server_host, StateData#state.host, StateData#state.room, make_opts(StateData)),
 	    ok;
 	error ->
@@ -1164,9 +1161,8 @@ subscribe_room(User, Nick, Room, Nodes) ->
 		    UserJID = jid:replace_resource(UserJID1, <<"modmucadmin">>),
 		    case get_room_pid(Name, Host) of
 			Pid when is_pid(Pid) ->
-			    case p1_fsm:sync_send_all_state_event(
-				   Pid,
-				   {muc_subscribe, UserJID, Nick, NodeList}) of
+			    case mod_muc_room:subscribe(
+				   Pid, UserJID, Nick, NodeList) of
 				{ok, SubscribedNodes} ->
 				    SubscribedNodes;
 				{error, Reason} ->
@@ -1191,9 +1187,7 @@ unsubscribe_room(User, Room) ->
 		UserJID ->
 		    case get_room_pid(Name, Host) of
 			Pid when is_pid(Pid) ->
-			    case p1_fsm:sync_send_all_state_event(
-				   Pid,
-				   {muc_unsubscribe, UserJID}) of
+			    case mod_muc_room:unsubscribe(Pid, UserJID) of
 				ok ->
 				    ok;
 				{error, Reason} ->
@@ -1214,7 +1208,7 @@ unsubscribe_room(User, Room) ->
 get_subscribers(Name, Host) ->
     case get_room_pid(Name, Host) of
 	Pid when is_pid(Pid) ->
-	    {ok, JIDList} = p1_fsm:sync_send_all_state_event(Pid, get_subscribers),
+	    {ok, JIDList} = mod_muc_room:get_subscribers(Pid),
 	    [jid:encode(jid:remove_resource(J)) || J <- JIDList];
 	_ ->
 	    throw({error, "The room does not exist"})
@@ -1279,7 +1273,7 @@ find_host(<<"global">>) ->
 find_host(ServerHost) when is_list(ServerHost) ->
     find_host(list_to_binary(ServerHost));
 find_host(ServerHost) ->
-    gen_mod:get_module_opt_host(ServerHost, mod_muc, <<"conference.@HOST@">>).
+    hd(gen_mod:get_module_opt_hosts(ServerHost, mod_muc)).
 
 find_hosts(Global) when Global == global;
 			Global == "global";
@@ -1292,7 +1286,7 @@ find_hosts(Global) when Global == global;
 		  false ->
 		      []
 	      end
-      end, ejabberd_config:get_myhosts());
+      end, ejabberd_option:hosts());
 find_hosts(ServerHost) when is_list(ServerHost) ->
     find_hosts(list_to_binary(ServerHost));
 find_hosts(ServerHost) ->
