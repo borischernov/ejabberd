@@ -115,6 +115,7 @@ store(Pkt, LServer, {LUser, LHost}, Type, Peer, Nick, _Dir, TS) ->
 	      _ ->
 		  fxml:element_to_binary(Pkt)
 	  end,
+	MessageId = get_message_id(Pkt),
     case ejabberd_sql:sql_query(
            LServer,
            ?SQL_INSERT(
@@ -127,7 +128,8 @@ store(Pkt, LServer, {LUser, LHost}, Type, Peer, Nick, _Dir, TS) ->
                "xml=%(XML)s",
                "txt=%(Body)s",
                "kind=%(SType)s",
-               "nick=%(Nick)s"])) of
+               "nick=%(Nick)s",
+               "message_id=%(MessageId)s"])) of
 	{updated, _} ->
 	    ok;
 	Err ->
@@ -532,4 +534,16 @@ make_archive_el(User, TS, XML, Peer, Kind, Nick, MsgType, JidRequestor, JidArchi
 		       "for user ~s in table 'archive': ~s",
 		       [XML, jid:encode(JidArchive), Reason]),
 	    {error, invalid_xml}
+    end.
+get_message_id(Pkt) ->
+	case fxml:get_subtag_with_xmlns(Pkt, <<"origin-id">>, <<"urn:xmpp:sid:0">>) of
+	#xmlel{} = OriginId ->
+    	fxml:get_tag_attr_s(<<"id">>, OriginId);
+    _ ->                         
+		case fxml:get_subtag_with_xmlns(Pkt, <<"stanza-id">>, <<"urn:xmpp:sid:0">>) of
+		#xmlel{} = StanzaId ->
+	    	fxml:get_tag_attr_s(<<"id">>, StanzaId);
+	    _ ->                         
+	    	<<>>
+	    end
     end.
