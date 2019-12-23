@@ -116,6 +116,7 @@ store(Pkt, LServer, {LUser, LHost}, Type, Peer, Nick, _Dir, TS) ->
 		  fxml:element_to_binary(Pkt)
 	  end,
 	MessageId = get_message_id(Pkt),
+	OwnMsg = is_own_msg(Type, LPeer, Pkt),
     case ejabberd_sql:sql_query(
            LServer,
            ?SQL_INSERT(
@@ -129,7 +130,8 @@ store(Pkt, LServer, {LUser, LHost}, Type, Peer, Nick, _Dir, TS) ->
                "txt=%(Body)s",
                "kind=%(SType)s",
                "nick=%(Nick)s",
-               "message_id=%(MessageId)s"])) of
+               "message_id=%(MessageId)s",
+               "own_message=%(OwnMsg)b"])) of
 	{updated, _} ->
 	    ok;
 	Err ->
@@ -547,3 +549,12 @@ get_message_id(Pkt) ->
 	    	<<>>
 	    end
     end.
+is_own_msg(groupchat, Peer, Pkt) -> 
+	false;
+is_own_msg(chat, Peer, Pkt) ->
+	case fxml:get_tag_attr_s(<<"from">>, Pkt) of
+	Peer -> 
+		false;
+	_ -> 
+		true
+	end.
