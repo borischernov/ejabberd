@@ -5,7 +5,7 @@
 %%% Created : 23 Apr 2014 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2014-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2014-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -80,7 +80,7 @@ request(#sip{hdrs = Hdrs} = Req, SIPSock) ->
         [<<"*">>] when Expires == 0 ->
             case unregister_session(US, CallID, CSeq) of
 		{ok, ContactsWithExpires} ->
-		    ?INFO_MSG("Unregister SIP session for user ~s@~s from ~s",
+		    ?INFO_MSG("Unregister SIP session for user ~ts@~ts from ~ts",
 			      [LUser, LServer, inet_parse:ntoa(PeerIP)]),
 		    Cs = prepare_contacts_to_send(ContactsWithExpires),
 		    mod_sip:make_response(
@@ -114,7 +114,7 @@ request(#sip{hdrs = Hdrs} = Req, SIPSock) ->
 					  IsOutboundSupported,
 					  ContactsWithExpires) of
 			{ok, Res} ->
-			    ?INFO_MSG("~s SIP session for user ~s@~s from ~s",
+			    ?INFO_MSG("~ts SIP session for user ~ts@~ts from ~ts",
 				      [Res, LUser, LServer,
 				       inet_parse:ntoa(PeerIP)]),
 			    Cs = prepare_contacts_to_send(ContactsWithExpires),

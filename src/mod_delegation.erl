@@ -4,7 +4,7 @@
 %%% Purpose : XEP-0355: Namespace Delegation
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -32,6 +32,7 @@
 
 %% API
 -export([start/2, stop/1, reload/3, mod_opt_type/1, depends/2, mod_options/1]).
+-export([mod_doc/0]).
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
@@ -81,6 +82,51 @@ mod_opt_type(namespaces) ->
 				{atom(), term()}].
 mod_options(_Host) ->
     [{namespaces, []}].
+
+mod_doc() ->
+    #{desc =>
+          ?T("This module is an implementation of "
+             "https://xmpp.org/extensions/xep-0355.html"
+             "[XEP-0355: Namespace Delegation]. "
+             "Only admin mode has been implemented by now. "
+             "Namespace delegation allows external services to "
+             "handle IQ using specific namespace. This may be applied "
+             "for external PEP service."),
+      opts =>
+          [{namespaces,
+            #{value => "{Namespace: Options}",
+              desc =>
+                  ?T("If you want to delegate namespaces to a component, "
+                     "specify them in this option, and associate them "
+                     "to an access rule. The 'Options' are:")},
+            [{filtering,
+              #{value => ?T("Attributes"),
+                desc =>
+                    ?T("The list of attributes. Currently not used.")}},
+             {access,
+              #{value => ?T("AccessName"),
+                desc =>
+                    ?T("The option defines which components are allowed "
+                       "for namespace delegation. The default value is 'none'.")}}]}],
+      example =>
+          ["access_rules:",
+           "  external_pubsub:",
+           "    allow: external_component",
+           "  external_mam:",
+           "    allow: external_component",
+           "",
+           "acl:",
+           "  external_component:",
+           "    server: sat-pubsub.example.org",
+           "",
+           "modules:",
+           "  ...",
+           "  mod_delegation:",
+           "    namespaces:",
+           "      urn:xmpp:mam:1:",
+           "        access: external_mam",
+           "      http://jabber.org/protocol/pubsub:",
+           "        access: external_pubsub"]}.
 
 depends(_, _) ->
     [].
@@ -168,7 +214,7 @@ handle_cast({component_connected, Host}, State) ->
 		  allow ->
 		      send_disco_queries(ServerHost, Host, NS);
 		  deny ->
-		      ?DEBUG("Denied delegation for ~s on ~s", [Host, NS])
+		      ?DEBUG("Denied delegation for ~ts on ~ts", [Host, NS])
 	      end
       end, NSAttrsAccessList),
     {noreply, State};
@@ -177,8 +223,8 @@ handle_cast({component_disconnected, Host}, State) ->
     Delegations =
 	maps:filter(
 	  fun({NS, Type}, {H, _}) when H == Host ->
-		  ?INFO_MSG("Remove delegation of namespace '~s' "
-			    "from external component '~s'",
+		  ?INFO_MSG("Remove delegation of namespace '~ts' "
+			    "from external component '~ts'",
 			    [NS, Host]),
 		  gen_iq_handler:remove_iq_handler(Type, ServerHost, NS),
 		  false;
@@ -293,7 +339,7 @@ process_iq_result(#iq{from = From, to = To, id = ID, lang = Lang} = IQ,
 	end
     catch _:_ ->
 	    ?ERROR_MSG("Got iq-result with invalid delegated "
-		       "payload:~n~s", [xmpp:pp(ResIQ)]),
+		       "payload:~n~ts", [xmpp:pp(ResIQ)]),
 	    Txt = ?T("External component failure"),
 	    Err = xmpp:err_internal_server_error(Txt, Lang),
 	    ejabberd_router:route_error(IQ, Err)
@@ -320,12 +366,12 @@ process_disco_info(ServerHost, Type, Host, NS, Info) ->
 	    gen_iq_handler:add_iq_handler(Type, ServerHost, NS, ?MODULE, Type),
 	    ejabberd_router:route(Msg),
 	    set_delegations(ServerHost, Delegations1),
-	    ?INFO_MSG("Namespace '~s' is delegated to external component '~s'",
+	    ?INFO_MSG("Namespace '~ts' is delegated to external component '~ts'",
 		      [NS, Host]);
 	{ok, {AnotherHost, _}} ->
-	    ?WARNING_MSG("Failed to delegate namespace '~s' to "
-			 "external component '~s' because it's already "
-			 "delegated to '~s'",
+	    ?WARNING_MSG("Failed to delegate namespace '~ts' to "
+			 "external component '~ts' because it's already "
+			 "delegated to '~ts'",
 			 [NS, Host, AnotherHost])
     end.
 

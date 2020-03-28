@@ -5,7 +5,7 @@
 %%% Created : 19 Mar 2003 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -217,6 +217,8 @@ unsubscribe(Pid, JID) ->
     try p1_fsm:sync_send_all_state_event(Pid, {muc_unsubscribe, JID})
     catch _:{timeout, {p1_fsm, _, _}} ->
 	    {error, ?T("Request has timed out")};
+	  exit:{normal, {p1_fsm, _, _}} ->
+	    ok;
 	  _:{_, {p1_fsm, _, _}} ->
 	    {error, ?T("Conference room does not exist")}
     end.
@@ -276,7 +278,7 @@ init([Host, ServerHost, Access, Room, HistorySize,
 		   room_shaper = Shaper}),
     State1 = set_opts(DefRoomOpts, State),
     store_room(State1),
-    ?INFO_MSG("Created MUC room ~s@~s by ~s",
+    ?INFO_MSG("Created MUC room ~ts@~ts by ~ts",
 	      [Room, Host, jid:encode(Creator)]),
     add_to_log(room_existence, created, State1),
     add_to_log(room_existence, started, State1),
@@ -623,7 +625,7 @@ normal_state(hibernate, StateData) ->
     case maps:size(StateData#state.users) of
 	0 ->
 	    store_room_no_checks(StateData, []),
-	    ?INFO_MSG("Hibernating room ~s@~s", [StateData#state.room, StateData#state.host]),
+	    ?INFO_MSG("Hibernating room ~ts@~ts", [StateData#state.room, StateData#state.host]),
 	    {stop, normal, StateData#state{hibernate_timer = hibernating}};
 	_ ->
 	    {next_state, normal_state, StateData}
@@ -646,13 +648,13 @@ handle_event({service_message, Msg}, _StateName,
 handle_event({destroy, Reason}, _StateName,
 	     StateData) ->
     _ = destroy_room(#muc_destroy{xmlns = ?NS_MUC_OWNER, reason = Reason}, StateData),
-    ?INFO_MSG("Destroyed MUC room ~s with reason: ~p",
+    ?INFO_MSG("Destroyed MUC room ~ts with reason: ~p",
 	      [jid:encode(StateData#state.jid), Reason]),
     add_to_log(room_existence, destroyed, StateData),
     Conf = StateData#state.config,
     {stop, shutdown, StateData#state{config = Conf#config{persistent = false}}};
 handle_event(destroy, StateName, StateData) ->
-    ?INFO_MSG("Destroyed MUC room ~s",
+    ?INFO_MSG("Destroyed MUC room ~ts",
 	      [jid:encode(StateData#state.jid)]),
     handle_event({destroy, <<"">>}, StateName, StateData);
 handle_event({set_affiliations, Affiliations},
@@ -741,10 +743,13 @@ handle_sync_event({muc_subscribe, From, Nick, Nodes}, _From,
 	{error, Err} ->
 	    {reply, {error, get_error_text(Err)}, StateName, StateData}
     end;
-handle_sync_event({muc_unsubscribe, From}, _From, StateName, StateData) ->
+handle_sync_event({muc_unsubscribe, From}, _From, StateName,
+		  #state{config = Conf} = StateData) ->
     IQ = #iq{type = set, id = p1_rand:get_string(),
 	     from = From, sub_els = [#muc_unsubscribe{}]},
     case process_iq_mucsub(From, IQ, StateData) of
+	{result, _, stop} ->
+	    {stop, normal, StateData#state{config = Conf#config{persistent = false}}};
 	{result, _, NewState} ->
 	    {reply, ok, StateName, NewState};
 	{ignore, NewState} ->
@@ -866,7 +871,7 @@ handle_info(_Info, StateName, StateData) ->
 terminate(Reason, _StateName,
 	  #state{server_host = LServer, host = Host, room = Room} = StateData) ->
     try
-	?INFO_MSG("Stopping MUC room ~s@~s", [Room, Host]),
+	?INFO_MSG("Stopping MUC room ~ts@~ts", [Room, Host]),
 	ReasonT = case Reason of
 		      shutdown ->
 			  ?T("You are being removed from the room "
@@ -909,7 +914,7 @@ terminate(Reason, _StateName,
     catch ?EX_RULE(E, R, St) ->
 	    StackTrace = ?EX_STACK(St),
 	    mod_muc:room_destroyed(Host, Room, self(), LServer),
-	    ?ERROR_MSG("Got exception on room termination:~n** ~s",
+	    ?ERROR_MSG("Got exception on room termination:~n** ~ts",
 		       [misc:format_exception(2, E, R, StackTrace)])
     end.
 
@@ -918,7 +923,7 @@ terminate(Reason, _StateName,
 %%%----------------------------------------------------------------------
 -spec route(pid(), stanza()) -> ok.
 route(Pid, Packet) ->
-    ?DEBUG("Routing to MUC room ~p:~n~s", [Pid, xmpp:pp(Packet)]),
+    ?DEBUG("Routing to MUC room ~p:~n~ts", [Pid, xmpp:pp(Packet)]),
     #jid{lresource = Nick} = xmpp:get_to(Packet),
     p1_fsm:send_event(Pid, {route, Nick, Packet}).
 
@@ -1312,7 +1317,7 @@ close_room_if_temporary_and_empty(StateData1) ->
 	andalso maps:size(StateData1#state.users) == 0
 	andalso maps:size(StateData1#state.subscribers) == 0 of
       true ->
-	  ?INFO_MSG("Destroyed MUC room ~s because it's temporary "
+	  ?INFO_MSG("Destroyed MUC room ~ts because it's temporary "
 		    "and empty",
 		    [jid:encode(StateData1#state.jid)]),
 	  add_to_log(room_existence, destroyed, StateData1),
@@ -2418,7 +2423,8 @@ send_new_presence(NJID, Reason, IsInitialPresence, StateData, OldStateData) ->
 	  last_presence = Presence0} = UserInfo =
 	maps:get(jid:tolower(LJID), StateData#state.users),
     {Role1, Presence1} =
-        case presence_broadcast_allowed(NJID, StateData) of
+        case (presence_broadcast_allowed(NJID, StateData) orelse
+         presence_broadcast_allowed(NJID, OldStateData)) of
             true -> {Role0, Presence0};
             false -> {none, #presence{type = unavailable}}
         end,
@@ -2872,8 +2878,8 @@ process_admin_items_set(UJID, Items, Lang, StateData) ->
 				  Items, Lang, StateData, [])
 	of
       {result, Res} ->
-	  ?INFO_MSG("Processing MUC admin query from ~s in "
-		    "room ~s:~n ~p",
+	  ?INFO_MSG("Processing MUC admin query from ~ts in "
+		    "room ~ts:~n ~p",
 		    [jid:encode(UJID),
 		     jid:encode(StateData#state.jid), Res]),
 	  case lists:foldl(process_item_change(UJID),
@@ -2915,9 +2921,13 @@ process_item_change(Item, SD, UJID) ->
 			set_role(JID, none, SD1);
 		    _ ->
 			SD1 = set_affiliation(JID, none, SD),
-			send_update_presence(JID, Reason, SD1, SD),
-			maybe_send_affiliation(JID, none, SD1),
-			SD1
+			SD2 = case (SD1#state.config)#config.moderated of
+			    true -> set_role(JID, visitor, SD1);
+			    false -> set_role(JID, participant, SD1)
+			end,
+			send_update_presence(JID, Reason, SD2, SD),
+			maybe_send_affiliation(JID, none, SD2),
+			SD2
 		end;
 	    {JID, affiliation, outcast, Reason} ->
 		send_kickban_presence(UJID, JID, Reason, 301, outcast, SD),
@@ -2954,7 +2964,7 @@ process_item_change(Item, SD, UJID) ->
 			     undefined ->
 				 <<"">>
 			 end,
-	    ?ERROR_MSG("Failed to set item ~p~s:~n** ~s",
+	    ?ERROR_MSG("Failed to set item ~p~ts:~n** ~ts",
 		       [Item, FromSuffix,
 			misc:format_exception(2, E, R, StackTrace)]),
 	    {error, xmpp:err_internal_server_error()}
@@ -3338,7 +3348,7 @@ process_iq_owner(From, #iq{type = set, lang = Lang,
 	    ErrText = ?T("Owner privileges required"),
 	    {error, xmpp:err_forbidden(ErrText, Lang)};
        Destroy /= undefined, Config == undefined, Items == [] ->
-	    ?INFO_MSG("Destroyed MUC room ~s by the owner ~s",
+	    ?INFO_MSG("Destroyed MUC room ~ts by the owner ~ts",
 		      [jid:encode(StateData#state.jid), jid:encode(From)]),
 	    add_to_log(room_existence, destroyed, StateData),
 	    destroy_room(Destroy, StateData);
@@ -3623,7 +3633,7 @@ set_config(Opts, Config, ServerHost, Lang) ->
 					   [Opt, Lang]) of
 		  {0, undefined} ->
 		      ?ERROR_MSG("set_room_option hook failed for "
-				 "option '~s' with value ~p", [O, V]),
+				 "option '~ts' with value ~p", [O, V]),
 		      Txt = {?T("Failed to process option '~s'"), [O]},
 		      {error, xmpp:err_internal_server_error(Txt, Lang)};
 		  {Pos, Val} ->
@@ -4108,8 +4118,19 @@ iq_disco_info_extras(Lang, StateData, Static) ->
 	      true ->
 		  Fs2
 	  end,
+    Fs4 = case Config#config.logging of
+	      true ->
+		  case mod_muc_log:get_url(StateData) of
+		      {ok, URL} ->
+			  [{logs, URL}|Fs3];
+		      error ->
+			  Fs3
+		  end;
+	      false ->
+		  Fs3
+	  end,
     #xdata{type = result,
-	   fields = muc_roominfo:encode(Fs3, Lang)}.
+	   fields = muc_roominfo:encode(Fs4, Lang)}.
 
 -spec process_iq_disco_items(jid(), iq(), state()) ->
 				    {error, stanza_error()} | {result, disco_items()}.
@@ -4182,7 +4203,7 @@ process_iq_vcard(From, #iq{type = set, lang = Lang, sub_els = [Pkt]},
 
 -spec process_iq_mucsub(jid(), iq(), state()) ->
       {error, stanza_error()} |
-      {result, undefined | muc_subscribe() | muc_subscriptions(), state()} |
+      {result, undefined | muc_subscribe() | muc_subscriptions(), stop | state()} |
       {ignore, state()}.
 process_iq_mucsub(_From, #iq{type = set, lang = Lang,
 			     sub_els = [#muc_subscribe{}]},

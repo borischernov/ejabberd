@@ -5,7 +5,7 @@
 %%% Created : 15 Jul 2017 by Holger Weiss <holger@zedat.fu-berlin.de>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2017-2019 ProcessOne
+%%% ejabberd, Copyright (C) 2017-2020 ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -30,13 +30,14 @@
 
 %% gen_mod callbacks.
 -export([start/2, stop/1, reload/3, mod_opt_type/1, mod_options/1, depends/2]).
-
+-export([mod_doc/0]).
 %% ejabberd_hooks callbacks.
 -export([c2s_session_pending/1, c2s_session_resumed/1, c2s_copy_session/2,
 	 c2s_handle_cast/2, c2s_handle_info/2, c2s_stanza/3]).
 
 -include("logger.hrl").
 -include("xmpp.hrl").
+-include("translate.hrl").
 
 -define(PUSH_BEFORE_TIMEOUT_PERIOD, 120000). % 2 minutes.
 
@@ -89,6 +90,45 @@ mod_options(_Host) ->
     [{resume_timeout, timer:seconds(259200)},
      {wake_on_start, false},
      {wake_on_timeout, true}].
+
+mod_doc() ->
+    #{desc =>
+          [?T("This module tries to keep the stream management "
+              "session (see 'mod_stream_mgmt') of a disconnected "
+              "mobile client alive if the client enabled push "
+              "notifications for that session. However, the normal "
+              "session resumption timeout is restored once a push "
+              "notification is issued, so the session will be closed "
+              "if the client doesn't respond to push notifications."), "",
+           ?T("The module depends on 'mod_push'.")],
+      opts =>
+          [{resume_timeout,
+            #{value => "timeout()",
+              desc =>
+                  ?T("This option specifies the period of time until "
+                     "the session of a disconnected push client times out. "
+                     "This timeout is only in effect as long as no push "
+                     "notification is issued. Once that happened, the "
+                     "resumption timeout configured for the 'mod_stream_mgmt' "
+                     "module is restored. "
+                     "The default value is '72' minutes.")}},
+           {wake_on_start,
+            #{value => "true | false",
+              desc =>
+                  ?T("If this option is set to 'true', notifications "
+                     "are generated for **all** registered push clients "
+                     "during server startup. This option should not be "
+                     "enabled on servers with many push clients as it "
+                     "can generate significant load on the involved push "
+                     "services and the server itself. "
+                     "The default value is 'false'.")}},
+           {wake_on_timeout,
+            #{value => "true | false",
+              desc =>
+                  ?T("If this option is set to 'true', a notification "
+                     "is generated shortly before the session would time "
+                     "out as per the 'resume_timeout' option. "
+                     "The default value is 'true'.")}}]}.
 
 %%--------------------------------------------------------------------
 %% Register/unregister hooks.
@@ -187,7 +227,7 @@ c2s_handle_cast(State, _Msg) ->
 -spec c2s_handle_info(c2s_state(), any()) -> c2s_state() | {stop, c2s_state()}.
 c2s_handle_info(#{push_enabled := true, mgmt_state := pending,
 		  jid := JID} = State, {timeout, _, push_keepalive}) ->
-    ?INFO_MSG("Waking ~s before session times out", [jid:encode(JID)]),
+    ?INFO_MSG("Waking ~ts before session times out", [jid:encode(JID)]),
     mod_push:notify(State, none, undefined),
     {stop, State};
 c2s_handle_info(State, _) ->
@@ -226,7 +266,7 @@ maybe_start_wakeup_timer(State) ->
 
 -spec wake_all(binary()) -> ok.
 wake_all(LServer) ->
-    ?INFO_MSG("Waking all push clients on ~s", [LServer]),
+    ?INFO_MSG("Waking all push clients on ~ts", [LServer]),
     Mod = gen_mod:db_mod(LServer, mod_push),
     case Mod:lookup_sessions(LServer) of
 	{ok, Sessions} ->

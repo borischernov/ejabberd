@@ -5,7 +5,7 @@
 %%% Created : 22 Jan 2003 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -113,7 +113,7 @@ process_iq(_Host, Module, Function, IQ) ->
 	    ok
     catch ?EX_RULE(Class, Reason, St) ->
 	    StackTrace = ?EX_STACK(St),
-	    ?ERROR_MSG("Failed to process iq:~n~s~n** ~s",
+	    ?ERROR_MSG("Failed to process iq:~n~ts~n** ~ts",
 		       [xmpp:pp(IQ),
 			misc:format_exception(2, Class, Reason, StackTrace)]),
 	    Txt = ?T("Module failed to handle the query"),

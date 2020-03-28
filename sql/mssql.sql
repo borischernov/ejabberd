@@ -1,5 +1,5 @@
 --
--- ejabberd, Copyright (C) 2002-2019   ProcessOne
+-- ejabberd, Copyright (C) 2002-2020   ProcessOne
 --
 -- This program is free software; you can redistribute it and/or
 -- modify it under the terms of the GNU General Public License as
@@ -26,8 +26,8 @@ CREATE TABLE [dbo].[archive] (
         [timestamp] [bigint] NOT NULL,
         [peer] [varchar] (250) NOT NULL,
         [bare_peer] [varchar] (250) NOT NULL,
-        [xml] [text] NOT NULL,
-        [txt] [text] NULL,
+        [xml] [ntext] NOT NULL,
+        [txt] [ntext] NULL,
         [id] [bigint] IDENTITY(1,1) NOT NULL,
         [kind] [varchar] (10) NULL,
         [nick] [varchar] (250) NULL,

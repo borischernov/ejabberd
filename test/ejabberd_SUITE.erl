@@ -3,7 +3,7 @@
 %%% Created :  2 Jun 2013 by Evgeniy Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -99,7 +99,7 @@ do_init_per_group(mysql, Config) ->
     case catch ejabberd_sql:sql_query(?MYSQL_VHOST, [<<"select 1;">>]) of
         {selected, _, _} ->
             mod_muc:shutdown_rooms(?MYSQL_VHOST),
-            create_sql_tables(mysql, ?config(base_dir, Config)),
+            clear_sql_tables(mysql, ?config(base_dir, Config)),
             set_opt(server, ?MYSQL_VHOST, Config);
         Err ->
             {skip, {mysql_not_available, Err}}
@@ -108,7 +108,7 @@ do_init_per_group(pgsql, Config) ->
     case catch ejabberd_sql:sql_query(?PGSQL_VHOST, [<<"select 1;">>]) of
         {selected, _, _} ->
             mod_muc:shutdown_rooms(?PGSQL_VHOST),
-            create_sql_tables(pgsql, ?config(base_dir, Config)),
+            clear_sql_tables(pgsql, ?config(base_dir, Config)),
             set_opt(server, ?PGSQL_VHOST, Config);
         Err ->
             {skip, {pgsql_not_available, Err}}
@@ -259,6 +259,8 @@ init_per_testcase(TestCase, OrigConfig) ->
     case Test of
         "test_connect" ++ _ ->
             Config;
+        "webadmin_" ++ _ ->
+            Config;
 	"test_legacy_auth_feature" ->
 	    connect(Config);
 	"test_legacy_auth" ++ _ ->
@@ -352,6 +354,7 @@ no_db_tests() ->
      auth_external_wrong_jid,
      auth_external_wrong_server,
      auth_external_invalid_cert,
+     jidprep_tests:single_cases(),
      sm_tests:single_cases(),
      sm_tests:master_slave_cases(),
      muc_tests:single_cases(),
@@ -371,6 +374,7 @@ db_tests(DB) when DB == mnesia; DB == redis ->
        auth_md5,
        presence_broadcast,
        last,
+       webadmin_tests:single_cases(),
        roster_tests:single_cases(),
        private_tests:single_cases(),
        privacy_tests:single_cases(),
@@ -400,6 +404,7 @@ db_tests(DB) ->
        auth_md5,
        presence_broadcast,
        last,
+       webadmin_tests:single_cases(),
        roster_tests:single_cases(),
        private_tests:single_cases(),
        privacy_tests:single_cases(),
@@ -988,9 +993,9 @@ bookmark_conference() ->
 %%%===================================================================
 %%% SQL stuff
 %%%===================================================================
-create_sql_tables(sqlite, _BaseDir) ->
+clear_sql_tables(sqlite, _BaseDir) ->
     ok;
-create_sql_tables(Type, BaseDir) ->
+clear_sql_tables(Type, BaseDir) ->
     {VHost, File} = case Type of
                         mysql ->
                             Path = case ejabberd_sql:use_new_schema() of
@@ -1011,13 +1016,13 @@ create_sql_tables(Type, BaseDir) ->
                     end,
     SQLFile = filename:join([BaseDir, "sql", File]),
     CreationQueries = read_sql_queries(SQLFile),
-    DropTableQueries = drop_table_queries(CreationQueries),
+    ClearTableQueries = clear_table_queries(CreationQueries),
     case ejabberd_sql:sql_transaction(
-           VHost, DropTableQueries ++ CreationQueries) of
+           VHost, ClearTableQueries) of
         {atomic, ok} ->
             ok;
         Err ->
-            ct:fail({failed_to_create_sql_tables, Type, Err})
+            ct:fail({failed_to_clear_sql_tables, Type, Err})
     end.
 
 read_sql_queries(File) ->
@@ -1028,12 +1033,12 @@ read_sql_queries(File) ->
             ct:fail({open_file_failed, File, Err})
     end.
 
-drop_table_queries(Queries) ->
+clear_table_queries(Queries) ->
     lists:foldl(
       fun(Query, Acc) ->
               case split(str:to_lower(Query)) of
                   [<<"create">>, <<"table">>, Table|_] ->
-                      [<<"DROP TABLE IF EXISTS ", Table/binary, ";">>|Acc];
+                      [<<"DELETE FROM ", Table/binary, ";">>|Acc];
                   _ ->
                       Acc
               end

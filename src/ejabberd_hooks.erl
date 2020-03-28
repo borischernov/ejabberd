@@ -5,7 +5,7 @@
 %%% Created :  8 Aug 2004 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -239,7 +239,7 @@ safe_apply(Hook, Module, Function, Args) ->
 	    Stack = ?EX_STACK(St),
 	    ?ERROR_MSG("Hook ~p crashed when running ~p:~p/~p:~n" ++
 			   string:join(
-			     ["** ~s"|
+			     ["** ~ts"|
 			      ["** Arg " ++ integer_to_list(I) ++ " = ~p"
 			       || I <- lists:seq(1, length(Args))]],
 			     "~n"),

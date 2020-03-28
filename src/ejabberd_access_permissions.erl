@@ -5,7 +5,7 @@
 %%% Created :  7 Sep 2016 by Paweł Chmielowski <pawel@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -106,7 +106,7 @@ handle_call({can_access, Cmd, CallerInfo}, _From, State) ->
 		    case matches_definition(Def, Cmd, CallerModule, Tag, Host, CallerInfo) of
 			true ->
 			    ?DEBUG("Command '~p' execution allowed by rule "
-				   "'~s' (CallerInfo=~p)", [Cmd, Name, CallerInfo]),
+				   "'~ts' (CallerInfo=~p)", [Cmd, Name, CallerInfo]),
 			    allow;
 			_ ->
 			    none

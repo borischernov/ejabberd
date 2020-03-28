@@ -5,7 +5,7 @@
 %%% Created :  1 Dec 2007 by Christophe Romain <christophe.romain@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -125,13 +125,13 @@ get_entity_subscriptions(_Host, Owner) ->
 		?SQL("select @(host)s, @(node)s, @(plugin)s, @(i.nodeid)d, @(jid)s, @(subscriptions)s "
 		     "from pubsub_state i, pubsub_node n "
 		     "where i.nodeid = n.nodeid and "
-		     "(jid=%(GJ)s or jid like %(GJLike)s escape '^') and host like %(HLike)s escape '^'");
+		     "(jid=%(GJ)s or jid like %(GJLike)s %ESCAPE) and host like %(HLike)s %ESCAPE");
 	      _ ->
 		SJ = node_flat_sql:encode_jid(SubKey),
 		?SQL("select @(host)s, @(node)s, @(plugin)s, @(i.nodeid)d, @(jid)s, @(subscriptions)s "
 		     "from pubsub_state i, pubsub_node n "
 		     "where i.nodeid = n.nodeid and "
-		     "jid in (%(SJ)s,%(GJ)s) and host like %(HLike)s escape '^'")
+		     "jid in (%(SJ)s,%(GJ)s) and host like %(HLike)s %ESCAPE")
 	    end,
     {result,
      case ejabberd_sql:sql_query_t(Query) of
@@ -162,14 +162,14 @@ get_entity_subscriptions_for_send_last(_Host, Owner) ->
 		     "from pubsub_state i, pubsub_node n, pubsub_node_option o "
 		     "where i.nodeid = n.nodeid and n.nodeid = o.nodeid and "
 		     "name='send_last_published_item' and val='on_sub_and_presence' and "
-		     "(jid=%(GJ)s or jid like %(GJLike)s escape '^') and host like %(HLike)s escape '^'");
+		     "(jid=%(GJ)s or jid like %(GJLike)s %ESCAPE) and host like %(HLike)s %ESCAPE");
 	      _ ->
 		SJ = node_flat_sql:encode_jid(SubKey),
 		?SQL("select @(host)s, @(node)s, @(plugin)s, @(i.nodeid)d, @(jid)s, @(subscriptions)s "
 		     "from pubsub_state i, pubsub_node n, pubsub_node_option o "
 		     "where i.nodeid = n.nodeid and n.nodeid = o.nodeid and "
 		     "name='send_last_published_item' and val='on_sub_and_presence' and "
-		     "jid in (%(SJ)s,%(GJ)s) and host like %(HLike)s escape '^'")
+		     "jid in (%(SJ)s,%(GJ)s) and host like %(HLike)s %ESCAPE")
 	    end,
     {result,
      case ejabberd_sql:sql_query_t(Query) of

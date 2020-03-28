@@ -4,7 +4,7 @@
 %%% Purpose : XEP-0356: Privileged Entity
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -32,6 +32,7 @@
 
 %% API
 -export([start/2, stop/1, reload/3, mod_opt_type/1, mod_options/1, depends/2]).
+-export([mod_doc/0]).
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
@@ -81,6 +82,90 @@ mod_options(_) ->
     [{roster, [{both, none}, {get, none}, {set, none}]},
      {presence, [{managed_entity, none}, {roster, none}]},
      {message, [{outgoing,none}]}].
+
+mod_doc() ->
+    #{desc =>
+          [?T("This module is an implementation of "
+              "https://xmpp.org/extensions/xep-0356.html"
+              "[XEP-0356: Privileged Entity]. This extension "
+              "allows components to have privileged access to "
+              "other entity data (send messages on behalf of the "
+              "server or on behalf of a user, get/set user roster, "
+              "access presence information, etc.). This may be used "
+              "to write powerful external components, for example "
+              "implementing an external "
+              "https://xmpp.org/extensions/xep-0163.html[PEP] or "
+              "https://xmpp.org/extensions/xep-0313.html[MAM] service."), "",
+           ?T("By default a component does not have any privileged access. "
+              "It is worth noting that the permissions grant access to "
+              "the component to a specific data type for all users of "
+              "the virtual host on which 'mod_privilege' is loaded."), "",
+           ?T("NOTE: This module is complementary to 'mod_delegation', "
+              "but can also be used separately.")],
+      opts =>
+          [{roster,
+            #{value => ?T("Options"),
+              desc =>
+                  ?T("This option defines roster permissions. "
+                     "By default no permissions are given. "
+                     "The 'Options' are:")},
+            [{both,
+              #{value => ?T("AccessName"),
+                desc =>
+                    ?T("Sets read/write access to a user's roster. "
+                       "The default value is 'none'.")}},
+             {get,
+              #{value => ?T("AccessName"),
+                desc =>
+                    ?T("Sets read access to a user's roster. "
+                       "The default value is 'none'.")}},
+             {set,
+              #{value => ?T("AccessName"),
+                desc =>
+                    ?T("Sets write access to a user's roster. "
+                       "The default value is 'none'.")}}]},
+           {message,
+            #{value => ?T("Options"),
+              desc =>
+                  ?T("This option defines permissions for messages. "
+                     "By default no permissions are given. "
+                     "The 'Options' are:")},
+            [{outgoing,
+              #{value => ?T("AccessName"),
+                desc =>
+                    ?T("The option defines an access rule for sending "
+                       "outgoing messages by the component. "
+                       "The default value is 'none'.")}}]},
+           {presence,
+            #{value => ?T("Options"),
+              desc =>
+                  ?T("This option defines permissions for presences. "
+                     "By default no permissions are given. "
+                     "The 'Options' are:")},
+            [{managed_entity,
+              #{value => ?T("AccessName"),
+                desc =>
+                    ?T("An access rule that gives permissions to "
+                       "the component to receive server presences. "
+                       "The default value is 'none'.")}},
+             {roster,
+              #{value => ?T("AccessName"),
+                desc =>
+                    ?T("An access rule that gives permissions to "
+                       "the component to receive the presence of both "
+                       "the users and the contacts in their roster. "
+                       "The default value is 'none'.")}}]}],
+      example =>
+          ["modules:",
+           "  ...",
+           "  mod_privilege:",
+           "    roster:",
+           "      get: all",
+           "    presence:",
+           "      managed_entity: all",
+           "    message:",
+           "      outgoing: all",
+           "  ..."]}.
 
 depends(_, _) ->
     [].
@@ -236,8 +321,8 @@ handle_cast({component_connected, Host}, State) ->
 				       #privilege_perm{access = presence,
 						       type = PresencePerm}]},
 	    ?INFO_MSG("Granting permissions to external "
-		      "component '~s': roster = ~s, presence = ~s, "
-		      "message = ~s",
+		      "component '~ts': roster = ~ts, presence = ~ts, "
+		      "message = ~ts",
 		      [Host, RosterPerm, PresencePerm, MessagePerm]),
 	    Msg = #message{from = From, to = To,  sub_els = [Priv]},
 	    ejabberd_router:route(Msg),
@@ -248,7 +333,7 @@ handle_cast({component_connected, Host}, State) ->
 	    ets:insert(?MODULE, {ServerHost, Permissions}),
 	    {noreply, State};
        true ->
-	    ?INFO_MSG("Granting no permissions to external component '~s'",
+	    ?INFO_MSG("Granting no permissions to external component '~ts'",
 		      [Host]),
 	    {noreply, State}
     end;

@@ -5,7 +5,7 @@
 %%% Created : 23 Nov 2002 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -46,7 +46,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
 
--export([auth_modules/1]).
+-export([auth_modules/1, convert_to_scram/1]).
 
 -include("scram.hrl").
 -include("logger.hrl").
@@ -76,7 +76,7 @@
     {ets_cache:tag(), {ok, password()} | {error, db_failure | not_allowed}}.
 -callback remove_user(binary(), binary()) -> ok | {error, db_failure | not_allowed}.
 -callback user_exists(binary(), binary()) -> {ets_cache:tag(), boolean() | {error, db_failure}}.
--callback check_password(binary(), binary(), binary(), binary()) -> {ets_cache:tag(), boolean()}.
+-callback check_password(binary(), binary(), binary(), binary()) -> {ets_cache:tag(), boolean() | {stop, boolean()}}.
 -callback try_register(binary(), binary(), password()) ->
     {ets_cache:tag(), {ok, password()} | {error, exists | db_failure | not_allowed}}.
 -callback get_users(binary(), opts()) -> [{binary(), binary()}].
@@ -237,17 +237,20 @@ check_password_with_authmodule(User, AuthzId, Server, Password, Digest, DigestGe
 		error ->
 		    false;
 		LAuthzId ->
-		    lists:foldl(
-		      fun(Mod, false) ->
-			      case db_check_password(
-				     LUser, LAuthzId, LServer, Password,
-				     Digest, DigestGen, Mod) of
-				  true -> {true, Mod};
-				  false -> false
-			      end;
-			 (_, Acc) ->
-			      Acc
-		      end, false, auth_modules(LServer))
+                    untag_stop(
+                      lists:foldl(
+                        fun(Mod, false) ->
+                                case db_check_password(
+                                       LUser, LAuthzId, LServer, Password,
+                                       Digest, DigestGen, Mod) of
+                                    true -> {true, Mod};
+                                    false -> false;
+                                    {stop, true} -> {stop, {true, Mod}};
+                                    {stop, false} -> {stop, false}
+                                end;
+                           (_, Acc) ->
+                                Acc
+                        end, false, auth_modules(LServer)))
 	    end;
 	_ ->
 	    false
@@ -484,7 +487,11 @@ remove_user(User, Server, Password) ->
 				  <<"">>, undefined, Mod) of
 			       true ->
 				   db_remove_user(LUser, LServer, Mod);
+			       {stop, true} ->
+				   db_remove_user(LUser, LServer, Mod);
 			       false ->
+				   {error, not_allowed};
+			       {stop, false} ->
 				   {error, not_allowed}
 			   end
 		   end, {error, not_allowed}, auth_modules(Server)) of
@@ -654,7 +661,9 @@ db_check_password(User, AuthzId, Server, ProvidedPassword,
 				   case Mod:check_password(
 					  User, AuthzId, Server, ProvidedPassword) of
 				       {CacheTag, true} -> {CacheTag, {ok, ProvidedPassword}};
-				       {CacheTag, false} -> {CacheTag, error}
+				       {CacheTag, {stop, true}} -> {CacheTag, {ok, ProvidedPassword}};
+				       {CacheTag, false} -> {CacheTag, error};
+				       {CacheTag, {stop, false}} -> {CacheTag, error}
 				   end
 			   end) of
 			{ok, _} ->
@@ -891,6 +900,9 @@ validate_credentials(User, Server, Password) ->
 	    end
     end.
 
+untag_stop({stop, Val}) -> Val;
+untag_stop(Val) -> Val.
+
 import_info() ->
     [{<<"users">>, 3}].
 
@@ -903,3 +915,24 @@ import(Server, {sql, _}, mnesia, <<"users">>, Fields) ->
     ejabberd_auth_mnesia:import(Server, Fields);
 import(_LServer, {sql, _}, sql, <<"users">>, _) ->
     ok.
+
+-spec convert_to_scram(binary()) -> {error, any()} | ok.
+convert_to_scram(Server) ->
+    LServer = jid:nameprep(Server),
+    if
+	LServer == error;
+	LServer == <<>> ->
+	    {error, {incorrect_server_name, Server}};
+	true ->
+	    lists:foreach(
+		fun({U, S}) ->
+		    case get_password(U, S) of
+			Pass when is_binary(Pass) ->
+			    SPass = password_to_scram(Pass),
+			    set_password(U, S, SPass);
+			_ ->
+			    ok
+		    end
+		end, get_users(LServer)),
+	    ok
+    end.

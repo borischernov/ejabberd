@@ -5,7 +5,7 @@
 %%% Created : 12 Dec 2004 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -251,7 +251,7 @@ transform(#passwd{us = {U, S}, password = Password} = P)
 	scram ->
 	    case jid:resourceprep(Password) of
 		error ->
-		    ?ERROR_MSG("SASLprep failed for password of user ~s@~s",
+		    ?ERROR_MSG("SASLprep failed for password of user ~ts@~ts",
 			       [U, S]),
 		    P;
 		_ ->

@@ -5,7 +5,7 @@
 %%% Created : 6 Mar 2010 by Karim Gemayel <karim.gemayel@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -32,7 +32,7 @@
 -behaviour(gen_mod).
 
 -export([start/2, stop/1, reload/3, process_local_iq/1,
-	 process_sm_iq/1, mod_options/1, depends/2]).
+	 process_sm_iq/1, mod_options/1, depends/2, mod_doc/0]).
 
 -include("logger.hrl").
 -include("xmpp.hrl").
@@ -96,3 +96,14 @@ get_ip({User, Server, Resource},
 
 mod_options(_Host) ->
     [].
+
+mod_doc() ->
+    #{desc =>
+          [?T("This module adds support for "
+              "https://xmpp.org/extensions/xep-0279.html"
+              "[XEP-0279: Server IP Check]. This protocol enables "
+              "a client to discover its external IP address."), "",
+           ?T("WARNING: The protocol extension is deferred and seems "
+              "like there are no clients supporting it, so using this "
+              "module is not recommended and, furthermore, the module "
+              "might be removed in the future.")]}.

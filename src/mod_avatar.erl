@@ -3,7 +3,7 @@
 %%% Created : 13 Sep 2017 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -26,6 +26,7 @@
 
 %% gen_mod API
 -export([start/2, stop/1, reload/3, depends/2, mod_opt_type/1, mod_options/1]).
+-export([mod_doc/0]).
 %% Hooks
 -export([pubsub_publish_item/6, vcard_iq_convert/1, vcard_iq_publish/1,
 	 get_sm_features/5]).
@@ -33,6 +34,7 @@
 -include("xmpp.hrl").
 -include("logger.hrl").
 -include("pubsub.hrl").
+-include("translate.hrl").
 
 -type avatar_id_meta() :: #{avatar_meta => {binary(), avatar_meta()}}.
 -opaque convert_rule() :: {default | eimp:img_type(), eimp:img_type()}.
@@ -96,11 +98,11 @@ pubsub_publish_item(LServer, ?NS_AVATAR_METADATA,
 		    set_vcard_avatar(From, Photo, #{})
 	    end;
 	_ ->
-	    ?WARNING_MSG("Invalid avatar metadata of ~s@~s published "
-			 "with item id ~s",
+	    ?WARNING_MSG("Invalid avatar metadata of ~ts@~ts published "
+			 "with item id ~ts",
 			 [LUser, LServer, ItemId])
     catch _:{xmpp_codec, Why} ->
-	    ?WARNING_MSG("Failed to decode avatar metadata of ~s@~s: ~s",
+	    ?WARNING_MSG("Failed to decode avatar metadata of ~ts@~ts: ~ts",
 			 [LUser, LServer, xmpp:format_error(Why)])
     end;
 pubsub_publish_item(_, _, _, _, _, _) ->
@@ -210,26 +212,26 @@ get_avatar_data(JID, ItemID) ->
 		    {ok, Data};
 		_ ->
 		    ?WARNING_MSG("Invalid avatar data detected "
-				 "for ~s@~s with item id ~s",
+				 "for ~ts@~ts with item id ~ts",
 				 [LUser, LServer, ItemID]),
 		    {error, invalid_data}
 	    catch _:{xmpp_codec, Why} ->
 		    ?WARNING_MSG("Failed to decode avatar data for "
-				 "~s@~s with item id ~s: ~s",
+				 "~ts@~ts with item id ~ts: ~ts",
 				 [LUser, LServer, ItemID,
 				  xmpp:format_error(Why)]),
 		    {error, invalid_data}
 	    end;
 	#pubsub_item{payload = []} ->
 	    ?WARNING_MSG("Empty avatar data detected "
-			 "for ~s@~s with item id ~s",
+			 "for ~ts@~ts with item id ~ts",
 			 [LUser, LServer, ItemID]),
 	    {error, invalid_data};
 	{error, #stanza_error{reason = 'item-not-found'}} ->
 	    {error, notfound};
 	{error, Reason} ->
-	    ?WARNING_MSG("Failed to get item for ~s@~s at node ~s "
-			 "with item id ~s: ~p",
+	    ?WARNING_MSG("Failed to get item for ~ts@~ts at node ~ts "
+			 "with item id ~ts: ~p",
 			 [LUser, LServer, ?NS_AVATAR_METADATA, ItemID, Reason]),
 	    {error, internal_error}
     end.
@@ -248,12 +250,12 @@ get_avatar_meta(#iq{from = JID}) ->
 		    {ok, ItemID, Meta};
 		_ ->
 		    ?WARNING_MSG("Invalid metadata payload detected "
-				 "for ~s@~s with item id ~s",
+				 "for ~ts@~ts with item id ~ts",
 				 [LUser, LServer, ItemID]),
 		    {error, invalid_metadata}
 	    catch _:{xmpp_codec, Why} ->
 		    ?WARNING_MSG("Failed to decode metadata for "
-				 "~s@~s with item id ~s: ~s",
+				 "~ts@~ts with item id ~ts: ~ts",
 				 [LUser, LServer, ItemID,
 				  xmpp:format_error(Why)]),
 		    {error, invalid_metadata}
@@ -261,7 +263,7 @@ get_avatar_meta(#iq{from = JID}) ->
 	{error, #stanza_error{reason = 'item-not-found'}} ->
 	    {error, notfound};
 	{error, Reason} ->
-	    ?WARNING_MSG("Failed to get items for ~s@~s at node ~s: ~p",
+	    ?WARNING_MSG("Failed to get items for ~ts@~ts at node ~ts: ~p",
 			 [LUser, LServer, ?NS_AVATAR_METADATA, Reason]),
 	    {error, internal_error}
     end.
@@ -305,16 +307,16 @@ publish_avatar(#iq{from = JID} = IQ, Meta, MimeType, Data, ItemID) ->
 		{result, _} ->
 		    IQ;
 		{error, StanzaErr} ->
-		    ?ERROR_MSG("Failed to publish avatar metadata for ~s: ~p",
+		    ?ERROR_MSG("Failed to publish avatar metadata for ~ts: ~p",
 			       [jid:encode(JID), StanzaErr]),
 		    {stop, StanzaErr}
 	    end;
 	{error, #stanza_error{reason = 'not-acceptable'} = StanzaErr} ->
-	    ?WARNING_MSG("Failed to publish avatar data for ~s: ~p",
+	    ?WARNING_MSG("Failed to publish avatar data for ~ts: ~p",
 			 [jid:encode(JID), StanzaErr]),
 	    {stop, StanzaErr};
 	{error, StanzaErr} ->
-	    ?ERROR_MSG("Failed to publish avatar data for ~s: ~p",
+	    ?ERROR_MSG("Failed to publish avatar data for ~ts: ~p",
 		       [jid:encode(JID), StanzaErr]),
 	    {stop, StanzaErr}
     end.
@@ -346,7 +348,7 @@ convert_avatar(LUser, LServer, Data, Rules) ->
     if NewType == undefined ->
 	    pass;
        true ->
-	    ?DEBUG("Converting avatar of ~s@~s: ~s -> ~s",
+	    ?DEBUG("Converting avatar of ~ts@~ts: ~ts -> ~ts",
 		   [LUser, LServer, Type, NewType]),
 	    RateLimit = mod_avatar_opt:rate_limit(LServer),
 	    Opts = [{limit_by, {LUser, LServer}},
@@ -356,7 +358,7 @@ convert_avatar(LUser, LServer, Data, Rules) ->
 		    {ok, encode_mime_type(NewType), NewData};
 		{error, Reason} = Err ->
 		    ?ERROR_MSG("Failed to convert avatar of "
-			       "~s@~s (~s -> ~s): ~s",
+			       "~ts@~ts (~ts -> ~ts): ~ts",
 			       [LUser, LServer, Type, NewType,
 				eimp:format_error(Reason)]),
 		    Err
@@ -393,11 +395,11 @@ get_vcard(#jid{luser = LUser, lserver = LServer}) ->
 	#vcard_temp{} = VCard ->
 	    {ok, VCard};
 	_ ->
-	    ?ERROR_MSG("Invalid vCard of ~s@~s in the database",
+	    ?ERROR_MSG("Invalid vCard of ~ts@~ts in the database",
 		       [LUser, LServer]),
 	    {error, invalid_vcard}
     catch _:{xmpp_codec, Why} ->
-	    ?ERROR_MSG("Failed to decode vCard of ~s@~s: ~s",
+	    ?ERROR_MSG("Failed to decode vCard of ~ts@~ts: ~ts",
 		       [LUser, LServer, xmpp:format_error(Why)]),
 	    {error, invalid_vcard}
     end.
@@ -458,3 +460,36 @@ mod_opt_type(rate_limit) ->
 mod_options(_) ->
     [{rate_limit, 10},
      {convert, []}].
+
+mod_doc() ->
+    #{desc =>
+          [?T("The purpose of the module is to cope with legacy and modern "
+              "XMPP clients posting avatars. The process is described in "
+              "https://xmpp.org/extensions/xep-0398.html"
+              "[XEP-0398: User Avatar to vCard-Based Avatars Conversion]."), "",
+           ?T("Also, the module supports conversion between avatar "
+              "image formats on the fly."), "",
+           ?T("The module depends on 'mod_vcard', 'mod_vcard_xupdate' and "
+              "'mod_pubsub'.")],
+      opts =>
+          [{convert,
+            #{value => "{From: To}",
+              desc =>
+                  ?T("Defines image convertion rules: the format in 'From' "
+                     "will be converted to format in 'To'. The value of 'From' "
+                     "can also be 'default', which is match-all rule. NOTE: "
+                     "the list of supported formats is detected at compile time "
+                     "depending on the image libraries installed in the system."),
+              example =>
+                  [{?T("In this example avatars in WebP format are "
+                       "converted to JPEG, all other formats are "
+                       "converted to PNG:"),
+                    ["convert:",
+                     "  webp: jpg",
+                     "  default: png"]}]}},
+           {rate_limit,
+            #{value => ?T("Number"),
+              desc =>
+                  ?T("Limit any given JID by the number of avatars it is able "
+                     "to convert per minute. This is to protect the server from "
+                     "image convertion DoS. The default value is '10'.")}}]}.

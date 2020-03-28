@@ -5,7 +5,7 @@
 %%% Created : 15 Oct 2015 by Holger Weiss <holger@zedat.fu-berlin.de>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2015-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2015-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -37,6 +37,7 @@
 -export([start/2,
 	 stop/1,
 	 depends/2,
+         mod_doc/0,
 	 mod_opt_type/1,
 	 mod_options/1]).
 
@@ -53,6 +54,7 @@
 
 -include("jid.hrl").
 -include("logger.hrl").
+-include("translate.hrl").
 -include_lib("kernel/include/file.hrl").
 
 -record(state,
@@ -91,6 +93,57 @@ mod_options(_) ->
     [{access_soft_quota, soft_upload_quota},
      {access_hard_quota, hard_upload_quota},
      {max_days, infinity}].
+
+mod_doc() ->
+    #{desc =>
+          [?T("This module adds quota support for mod_http_upload."), "",
+           ?T("This module depends on 'mod_http_upload'.")],
+      opts =>
+          [{max_days,
+            #{value => ?T("Days"),
+              desc =>
+                  ?T("If a number larger than zero is specified, "
+                     "any files (and directories) older than this "
+                     "number of days are removed from the subdirectories "
+                     "of the 'docroot' directory, once per day. "
+                     "The default value is 'infinity'.")}},
+           {access_soft_quota,
+            #{value => ?T("AccessName"),
+              desc =>
+                  ?T("This option defines which access rule is used "
+                     "to specify the \"soft quota\" for the matching JIDs. "
+                     "That rule must yield a positive number of megabytes "
+                     "for any JID that is supposed to have a quota limit. "
+                     "See the description of the 'access_hard_quota' option "
+                     "for details. The default value is 'soft_upload_quota'.")}},
+           {access_hard_quota,
+            #{value => ?T("AccessName"),
+              desc =>
+                  ?T("This option defines which access rule is used to "
+                     "specify the \"hard quota\" for the matching JIDs. "
+                     "That rule must yield a positive number for any "
+                     "JID that is supposed to have a quota limit. "
+                     "This is the number of megabytes a corresponding "
+                     "user may upload. When this threshold is exceeded, "
+                     "ejabberd deletes the oldest files uploaded by that "
+                     "user until their disk usage equals or falls below "
+                     "the specified soft quota (see 'access_soft_quota'). "
+                     "The default value is 'hard_upload_quota'.")}}],
+      example =>
+          ["shaper_rules:",
+           "  ...",
+           "  soft_upload_quota:",
+           "    1000: all # MiB",
+           "  hard_upload_quota:",
+           "    1100: all # MiB",
+           "  ...",
+           "",
+           "modules:",
+           "  ...",
+           "  mod_http_upload: {}",
+           "  mod_http_upload_quota:",
+           "    max_days: 100",
+           "  ..."]}.
 
 -spec depends(binary(), gen_mod:opts()) -> [{module(), hard | soft}].
 depends(_Host, _Opts) ->
@@ -155,24 +208,24 @@ handle_cast({handle_slot_request, #jid{user = U, server = S} = JID, Path, Size},
 	      end,
     NewSize = case {HardQuota, SoftQuota} of
 		  {0, 0} ->
-		      ?DEBUG("No quota specified for ~s",
+		      ?DEBUG("No quota specified for ~ts",
 			     [jid:encode(JID)]),
 		      undefined;
 		  {0, _} ->
-		      ?WARNING_MSG("No hard quota specified for ~s",
+		      ?WARNING_MSG("No hard quota specified for ~ts",
 				   [jid:encode(JID)]),
 		      enforce_quota(Path, Size, OldSize, SoftQuota, SoftQuota);
 		  {_, 0} ->
-		      ?WARNING_MSG("No soft quota specified for ~s",
+		      ?WARNING_MSG("No soft quota specified for ~ts",
 				   [jid:encode(JID)]),
 		      enforce_quota(Path, Size, OldSize, HardQuota, HardQuota);
 		  _ when SoftQuota > HardQuota ->
-		      ?WARNING_MSG("Bad quota for ~s (soft: ~p, hard: ~p)",
+		      ?WARNING_MSG("Bad quota for ~ts (soft: ~p, hard: ~p)",
 				   [jid:encode(JID),
 				    SoftQuota, HardQuota]),
 		      enforce_quota(Path, Size, OldSize, SoftQuota, SoftQuota);
 		  _ ->
-		      ?DEBUG("Enforcing quota for ~s",
+		      ?DEBUG("Enforcing quota for ~ts",
 			     [jid:encode(JID)]),
 		      enforce_quota(Path, Size, OldSize, SoftQuota, HardQuota)
 	      end,
@@ -191,7 +244,7 @@ handle_info(sweep, #state{server_host = ServerHost,
 			  docroot = DocRoot,
 			  max_days = MaxDays} = State)
     when is_integer(MaxDays), MaxDays > 0 ->
-    ?DEBUG("Got 'sweep' message for ~s", [ServerHost]),
+    ?DEBUG("Got 'sweep' message for ~ts", [ServerHost]),
     case file:list_dir(DocRoot) of
 	{ok, Entries} ->
 	    BackThen = secs_since_epoch() - (MaxDays * 86400),
@@ -204,7 +257,7 @@ handle_info(sweep, #state{server_host = ServerHost,
 				  delete_old_files(UserDir, BackThen)
 			  end, UserDirs);
 	{error, Error} ->
-	    ?ERROR_MSG("Cannot open document root ~s: ~s",
+	    ?ERROR_MSG("Cannot open document root ~ts: ~ts",
 		       [DocRoot, ?FORMAT(Error)])
     end,
     {noreply, State};
@@ -214,14 +267,14 @@ handle_info(Info, State) ->
 
 -spec terminate(normal | shutdown | {shutdown, _} | _, state()) -> ok.
 terminate(Reason, #state{server_host = ServerHost, timers = Timers}) ->
-    ?DEBUG("Stopping upload quota process for ~s: ~p", [ServerHost, Reason]),
+    ?DEBUG("Stopping upload quota process for ~ts: ~p", [ServerHost, Reason]),
     ejabberd_hooks:delete(http_upload_slot_request, ServerHost, ?MODULE,
 			  handle_slot_request, 50),
     lists:foreach(fun timer:cancel/1, Timers).
 
 -spec code_change({down, _} | _, state(), _) -> {ok, state()}.
 code_change(_OldVsn, #state{server_host = ServerHost} = State, _Extra) ->
-    ?DEBUG("Updating upload quota process for ~s", [ServerHost]),
+    ?DEBUG("Updating upload quota process for ~ts", [ServerHost]),
     {ok, State}.
 
 %%--------------------------------------------------------------------
@@ -295,20 +348,20 @@ gather_file_info(Dir) ->
 						    size = Size}} ->
 					[{Path, Size, Time} | Acc];
 				    {ok, _Info} ->
-					?DEBUG("Won't stat(2) non-regular file ~s",
+					?DEBUG("Won't stat(2) non-regular file ~ts",
 					       [Path]),
 					Acc;
 				    {error, Error} ->
-					?ERROR_MSG("Cannot stat(2) ~s: ~s",
+					?ERROR_MSG("Cannot stat(2) ~ts: ~ts",
 						   [Path, ?FORMAT(Error)]),
 					Acc
 				end
 			end, [], Entries);
 	{error, enoent} ->
-	    ?DEBUG("Directory ~s doesn't exist", [Dir]),
+	    ?DEBUG("Directory ~ts doesn't exist", [Dir]),
 	    [];
 	{error, Error} ->
-	    ?ERROR_MSG("Cannot open directory ~s: ~s", [Dir, ?FORMAT(Error)]),
+	    ?ERROR_MSG("Cannot open directory ~ts: ~ts", [Dir, ?FORMAT(Error)]),
 	    []
     end.
 
@@ -316,16 +369,16 @@ gather_file_info(Dir) ->
 del_file_and_dir(File) ->
     case file:delete(File) of
 	ok ->
-	    ?INFO_MSG("Removed ~s", [File]),
+	    ?INFO_MSG("Removed ~ts", [File]),
 	    Dir = filename:dirname(File),
 	    case file:del_dir(Dir) of
 		ok ->
-		    ?DEBUG("Removed ~s", [Dir]);
+		    ?DEBUG("Removed ~ts", [Dir]);
 		{error, Error} ->
-		    ?DEBUG("Cannot remove ~s: ~s", [Dir, ?FORMAT(Error)])
+		    ?DEBUG("Cannot remove ~ts: ~ts", [Dir, ?FORMAT(Error)])
 	    end;
 	{error, Error} ->
-	    ?WARNING_MSG("Cannot remove ~s: ~s", [File, ?FORMAT(Error)])
+	    ?WARNING_MSG("Cannot remove ~ts: ~ts", [File, ?FORMAT(Error)])
     end.
 
 -spec secs_since_epoch() -> non_neg_integer().

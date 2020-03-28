@@ -1,6 +1,6 @@
 %%%----------------------------------------------------------------------
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -38,4 +38,5 @@
 -record(sql_escape, {string :: fun((binary()) -> binary()),
 		     integer :: fun((integer()) -> binary()),
 		     boolean :: fun((boolean()) -> binary()),
-		     in_array_string :: fun((binary()) -> binary())}).
+		     in_array_string :: fun((binary()) -> binary()),
+		     like_escape :: fun(() -> binary())}).

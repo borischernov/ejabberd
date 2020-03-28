@@ -3,7 +3,7 @@
 %%% Created : 25 Dec 2016 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -27,6 +27,7 @@
 
 %% gen_mod API
 -export([start/2, stop/1, reload/3, depends/2, mod_opt_type/1, mod_options/1]).
+-export([mod_doc/0]).
 %% hooks
 -export([c2s_stream_started/2, c2s_stream_features/2,
 	 c2s_authenticated_packet/2, c2s_unauthenticated_packet/2,
@@ -98,7 +99,7 @@ stop(Host) ->
 
 reload(_Host, NewOpts, _OldOpts) ->
     init_cache(NewOpts),
-    ?WARNING_MSG("Module ~s is reloaded, but new configuration will take "
+    ?WARNING_MSG("Module ~ts is reloaded, but new configuration will take "
 		 "effect for newly created client connections only", [?MODULE]).
 
 depends(_Host, _Opts) ->
@@ -237,7 +238,7 @@ c2s_handle_call(State, _Call, _From) ->
 
 c2s_handle_info(#{mgmt_ack_timer := TRef, jid := JID, mod := Mod} = State,
 		{timeout, TRef, ack_timeout}) ->
-    ?DEBUG("Timed out waiting for stream management acknowledgement of ~s",
+    ?DEBUG("Timed out waiting for stream management acknowledgement of ~ts",
 	   [jid:encode(JID)]),
     State1 = Mod:close(State),
     State2 = State1#{stop_reason => {socket, ack_timeout}},
@@ -245,7 +246,7 @@ c2s_handle_info(#{mgmt_ack_timer := TRef, jid := JID, mod := Mod} = State,
 c2s_handle_info(#{mgmt_state := pending, lang := Lang,
 		  mgmt_pending_timer := TRef, jid := JID, mod := Mod} = State,
 		{timeout, TRef, pending_timeout}) ->
-    ?DEBUG("Timed out waiting for resumption of stream for ~s",
+    ?DEBUG("Timed out waiting for resumption of stream for ~ts",
 	   [jid:encode(JID)]),
     Txt = ?T("Timed out waiting for stream resumption"),
     Err = xmpp:serr_connection_timeout(Txt, Lang),
@@ -254,7 +255,7 @@ c2s_handle_info(#{mgmt_state := pending, lang := Lang,
 c2s_handle_info(State, {_Ref, {resume, #{jid := JID} = OldState}}) ->
     %% This happens if the resume_session/1 request timed out; the new session
     %% now receives the late response.
-    ?DEBUG("Received old session state for ~s after failed resumption",
+    ?DEBUG("Received old session state for ~ts after failed resumption",
 	   [jid:encode(JID)]),
     route_unacked_stanzas(OldState#{mgmt_resend => false}),
     {stop, State};
@@ -275,7 +276,7 @@ c2s_closed(State, _Reason) ->
     State.
 
 c2s_terminated(#{mgmt_state := resumed, sid := SID, jid := JID} = State, _Reason) ->
-    ?DEBUG("Closing former stream of resumed session for ~s",
+    ?DEBUG("Closing former stream of resumed session for ~ts",
 	   [jid:encode(JID)]),
     {U, S, R} = jid:tolower(JID),
     ejabberd_sm:close_session(SID, U, S, R),
@@ -379,14 +380,14 @@ handle_enable(#{mgmt_timeout := DefaultTimeout,
 		      DefaultTimeout
 	      end,
     Res = if Timeout > 0 ->
-		  ?DEBUG("Stream management with resumption enabled for ~s",
+		  ?DEBUG("Stream management with resumption enabled for ~ts",
 			 [jid:encode(JID)]),
 		  #sm_enabled{xmlns = Xmlns,
 			      id = make_resume_id(State),
 			      resume = true,
 			      max = Timeout div 1000};
 	     true ->
-		  ?DEBUG("Stream management without resumption enabled for ~s",
+		  ?DEBUG("Stream management without resumption enabled for ~ts",
 			 [jid:encode(JID)]),
 		  #sm_enabled{xmlns = Xmlns}
 	  end,
@@ -432,7 +433,7 @@ handle_resume(#{user := User, lserver := LServer,
 	    State3 = resend_unacked_stanzas(State2),
 	    State4 = send(State3, #sm_r{xmlns = AttrXmlns}),
 	    State5 = ejabberd_hooks:run_fold(c2s_session_resumed, LServer, State4, []),
-	    ?INFO_MSG("(~s) Resumed session for ~s",
+	    ?INFO_MSG("(~ts) Resumed session for ~ts",
 		      [xmpp_socket:pp(Socket), jid:encode(JID)]),
 	    {ok, State5};
 	{error, El, Reason} ->
@@ -448,7 +449,7 @@ transition_to_pending(#{mgmt_state := active, jid := JID, socket := Socket,
 			lserver := LServer, mgmt_timeout := Timeout} = State,
 		      Reason) ->
     State1 = cancel_ack_timer(State),
-    ?INFO_MSG("(~s) Closing c2s connection for ~s: ~s; "
+    ?INFO_MSG("(~ts) Closing c2s connection for ~ts: ~ts; "
 	      "waiting ~B seconds for stream resumption",
 	      [xmpp_socket:pp(Socket), jid:encode(JID),
 	       format_reason(State, Reason), Timeout div 1000]),
@@ -462,14 +463,14 @@ transition_to_pending(State, _Reason) ->
 check_h_attribute(#{mgmt_stanzas_out := NumStanzasOut, jid := JID,
 		    lang := Lang} = State, H)
   when H > NumStanzasOut ->
-    ?WARNING_MSG("~s acknowledged ~B stanzas, but only ~B were sent",
+    ?WARNING_MSG("~ts acknowledged ~B stanzas, but only ~B were sent",
 		 [jid:encode(JID), H, NumStanzasOut]),
     State1 = State#{mgmt_resend => false},
     Err = xmpp:serr_undefined_condition(
 	    ?T("Client acknowledged more stanzas than sent by server"), Lang),
     send(State1, Err);
 check_h_attribute(#{mgmt_stanzas_out := NumStanzasOut, jid := JID} = State, H) ->
-    ?DEBUG("~s acknowledged ~B of ~B stanzas",
+    ?DEBUG("~ts acknowledged ~B of ~B stanzas",
 	   [jid:encode(JID), H, NumStanzasOut]),
     mgmt_queue_drop(State, H).
 
@@ -493,11 +494,10 @@ update_num_stanzas_in(State, _El) ->
 send_rack(#{mgmt_ack_timer := _} = State) ->
     State;
 send_rack(#{mgmt_xmlns := Xmlns,
-	    mgmt_stanzas_out := NumStanzasOut,
-	    mgmt_ack_timeout := AckTimeout} = State) ->
-    TRef = erlang:start_timer(AckTimeout, self(), ack_timeout),
-    State1 = State#{mgmt_ack_timer => TRef, mgmt_stanzas_req => NumStanzasOut},
-    send(State1, #sm_r{xmlns = Xmlns}).
+	    mgmt_stanzas_out := NumStanzasOut} = State) ->
+    State1 = State#{mgmt_stanzas_req => NumStanzasOut},
+    State2 = start_ack_timer(State1),
+    send(State2, #sm_r{xmlns = Xmlns}).
 
 -spec resend_rack(state()) -> state().
 resend_rack(#{mgmt_ack_timer := _,
@@ -548,7 +548,7 @@ resend_unacked_stanzas(#{mgmt_state := MgmtState,
   when (MgmtState == active orelse
 	MgmtState == pending orelse
 	MgmtState == timeout) andalso ?qlen(Queue) > 0 ->
-    ?DEBUG("Resending ~B unacknowledged stanza(s) to ~s",
+    ?DEBUG("Resending ~B unacknowledged stanza(s) to ~ts",
 	   [p1_queue:len(Queue), jid:encode(JID)]),
     p1_queue:foldl(
       fun({_, Time, Pkt}, AccState) ->
@@ -585,11 +585,11 @@ route_unacked_stanzas(#{mgmt_state := MgmtState,
 				  _ -> false
 			      end
 		      end,
-    ?DEBUG("Re-routing ~B unacknowledged stanza(s) to ~s",
+    ?DEBUG("Re-routing ~B unacknowledged stanza(s) to ~ts",
 	   [p1_queue:len(Queue), jid:encode(JID)]),
     p1_queue:foreach(
       fun({_, _Time, #presence{from = From}}) ->
-	      ?DEBUG("Dropping presence stanza from ~s", [jid:encode(From)]);
+	      ?DEBUG("Dropping presence stanza from ~ts", [jid:encode(From)]);
 	 ({_, _Time, #iq{} = El}) ->
 	      Txt = ?T("User session terminated"),
 	      ejabberd_router:route_error(
@@ -600,14 +600,14 @@ route_unacked_stanzas(#{mgmt_state := MgmtState,
 	      %% any reason, the receiving server MUST NOT forward that error
 	      %% back to the original sender."  Resending such a stanza could
 	      %% easily lead to unexpected results as well.
-	      ?DEBUG("Dropping forwarded message stanza from ~s",
+	      ?DEBUG("Dropping forwarded message stanza from ~ts",
 		     [jid:encode(From)]);
 	 ({_, Time, #message{} = Msg}) ->
 	      case ejabberd_hooks:run_fold(message_is_archived,
 					   LServer, false,
 					   [State, Msg]) of
 		  true ->
-		      ?DEBUG("Dropping archived message stanza from ~s",
+		      ?DEBUG("Dropping archived message stanza from ~ts",
 			     [jid:encode(xmpp:get_from(Msg))]);
 		  false when ResendOnTimeout ->
 		      NewEl = add_resent_delay_info(State, Msg, Time),
@@ -712,6 +712,13 @@ restart_pending_timer(#{mgmt_pending_timer := TRef} = State, NewTimeout) ->
 restart_pending_timer(State, _NewTimeout) ->
     State.
 
+-spec start_ack_timer(state()) -> state().
+start_ack_timer(#{mgmt_ack_timeout := infinity} = State) ->
+    State;
+start_ack_timer(#{mgmt_ack_timeout := AckTimeout} = State) ->
+    TRef = erlang:start_timer(AckTimeout, self(), ack_timeout),
+    State#{mgmt_ack_timer => TRef}.
+
 -spec cancel_ack_timer(state()) -> state().
 cancel_ack_timer(#{mgmt_ack_timer := TRef} = State) ->
     misc:cancel_timer(TRef),
@@ -759,10 +766,10 @@ format_reason(State, Reason) ->
 -spec log_resumption_error(binary(), binary(), error_reason()) -> ok.
 log_resumption_error(User, Server, Reason)
   when Reason == invalid_previd ->
-    ?WARNING_MSG("Cannot resume session for ~s@~s: ~s",
+    ?WARNING_MSG("Cannot resume session for ~ts@~ts: ~ts",
 		 [User, Server, format_error(Reason)]);
 log_resumption_error(User, Server, Reason) ->
-    ?INFO_MSG("Cannot resume session for ~s@~s: ~s",
+    ?INFO_MSG("Cannot resume session for ~ts@~ts: ~ts",
 	      [User, Server, format_error(Reason)]).
 
 %%%===================================================================
@@ -849,3 +856,82 @@ mod_options(Host) ->
      {cache_life_time, timer:hours(48)},
      {resend_on_timeout, false},
      {queue_type, ejabberd_option:queue_type(Host)}].
+
+mod_doc() ->
+    #{desc =>
+          ?T("This module adds support for "
+             "https://xmpp.org/extensions/xep-0198.html"
+             "[XEP-0198: Stream Management]. This protocol allows "
+             "active management of an XML stream between two XMPP "
+             "entities, including features for stanza acknowledgements "
+             "and stream resumption."),
+      opts =>
+          [{max_ack_queue,
+            #{value => ?T("Size"),
+              desc =>
+                  ?T("This option specifies the maximum number of "
+                     "unacknowledged stanzas queued for possible "
+                     "retransmission. When the limit is exceeded, "
+                     "the client session is terminated. The allowed "
+                     "values are positive integers and 'infinity'. "
+                     "You should be careful when setting this value "
+                     "as it should not be set too low, otherwise, "
+                     "you could kill sessions in a loop, before they "
+                     "get the chance to finish proper session initiation. "
+                     "It should definitely be set higher that the size "
+                     "of the offline queue (for example at least 3 times "
+                     "the value of the max offline queue and never lower "
+                     "than '1000'). The default value is '5000'.")}},
+           {resume_timeout,
+            #{value => "timeout()",
+              desc =>
+                  ?T("This option configures the (default) period of time "
+                     "until a session times out if the connection is lost. "
+                     "During this period of time, a client may resume its "
+                     "session. Note that the client may request a different "
+                     "timeout value, see the 'max_resume_timeout' option. "
+                     "Setting it to '0' effectively disables session resumption. "
+                     "The default value is '5' minutes.")}},
+           {max_resume_timeout,
+            #{value => "timeout()",
+              desc =>
+                  ?T("A client may specify the period of time until a session "
+                     "times out if the connection is lost. During this period "
+                     "of time, the client may resume its session. This option "
+                     "limits the period of time a client is permitted to request. "
+                     "It must be set to a timeout equal to or larger than the "
+                     "default 'resume_timeout'. By default, it is set to the "
+                     "same value as the 'resume_timeout' option.")}},
+           {ack_timeout,
+            #{value => "timeout()",
+              desc =>
+                  ?T("A time to wait for stanza acknowledgements. "
+                     "Setting it to 'infinity' effectively disables the timeout. "
+                     "The default value is '1' minute.")}},
+           {resend_on_timeout,
+            #{value => "true | false | if_offline",
+              desc =>
+                  ?T("If this option is set to 'true', any message stanzas "
+                     "that weren't acknowledged by the client will be resent "
+                     "on session timeout. This behavior might often be desired, "
+                     "but could have unexpected results under certain circumstances. "
+                     "For example, a message that was sent to two resources might "
+                     "get resent to one of them if the other one timed out. "
+                     "Therefore, the default value for this option is 'false', "
+                     "which tells ejabberd to generate an error message instead. "
+                     "As an alternative, the option may be set to 'if_offline'. "
+                     "In this case, unacknowledged messages are resent only if "
+                     "no other resource is online when the session times out. "
+                     "Otherwise, error messages are generated.")}},
+           {queue_type,
+            #{value => "ram | file",
+              desc =>
+                  ?T("Same as top-level 'queue_type' option, but applied to this module only.")}},
+           {cache_size,
+            #{value => "pos_integer() | infinity",
+              desc =>
+                  ?T("Same as top-level 'cache_size' option, but applied to this module only.")}},
+           {cache_life_time,
+            #{value => "timeout()",
+              desc =>
+                  ?T("Same as top-level 'cache_life_time' option, but applied to this module only.")}}]}.

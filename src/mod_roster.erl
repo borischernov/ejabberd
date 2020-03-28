@@ -5,7 +5,7 @@
 %%% Created : 11 Dec 2002 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -48,7 +48,7 @@
 	 out_subscription/1, set_items/3, remove_user/2,
 	 get_jid_info/4, encode_item/1, webadmin_page/3,
 	 webadmin_user/4, get_versioning_feature/2,
-	 roster_version/2,
+	 roster_version/2, mod_doc/0,
 	 mod_opt_type/1, mod_options/1, set_roster/1, del_roster/3,
 	 process_rosteritems/5,
 	 depends/2, set_item_and_notify_clients/3]).
@@ -1004,8 +1004,8 @@ user_roster(User, Server, Query, Lang) ->
 					end,
 					SItems)))])]
 	     end,
-    [?XC(<<"h1">>,
-	 (<<(translate:translate(Lang, ?T("Roster of ")))/binary, (us_to_list(US))/binary>>))]
+    PageTitle = str:format(translate:translate(Lang, ?T("Roster of ~ts")), [us_to_list(US)]),
+    (?H1GL(PageTitle, <<"mod-roster">>, <<"mod_roster">>))
       ++
       case Res of
 	ok -> [?XREST(?T("Submitted"))];
@@ -1031,7 +1031,7 @@ build_contact_jid_td(RosterJID) ->
 		   case lists:member(CServer, ejabberd_option:hosts()) of
 		     false -> <<"">>;
 		     true ->
-			 <<"/admin/server/", CServer/binary, "/user/",
+			 <<"../../../../../server/", CServer/binary, "/user/",
 			   CUser/binary, "/">>
 		   end
 	     end,
@@ -1255,3 +1255,68 @@ mod_options(Host) ->
      {cache_size, ejabberd_option:cache_size(Host)},
      {cache_missed, ejabberd_option:cache_missed(Host)},
      {cache_life_time, ejabberd_option:cache_life_time(Host)}].
+
+mod_doc() ->
+    #{desc =>
+          ?T("This module implements roster management as "
+             "defined in https://tools.ietf.org/html/rfc6121#section-2"
+             "[RFC6121 Section 2]. The module also adds support for "
+             "https://xmpp.org/extensions/xep-0237.html"
+             "[XEP-0237: Roster Versioning]."),
+      opts =>
+          [{access,
+            #{value => ?T("AccessName"),
+              desc =>
+                  ?T("This option can be configured to specify "
+                     "rules to restrict roster management. "
+                     "If the rule returns 'deny' on the requested "
+                     "user name, that user cannot modify their personal "
+                     "roster, i.e. they cannot add/remove/modify contacts "
+                     "or send presence subscriptions. "
+                     "The default value is 'all', i.e. no restrictions.")}},
+           {versioning,
+            #{value => "true | false",
+              desc =>
+                  ?T("Enables/disables Roster Versioning. "
+                     "The default value is 'false'.")}},
+           {store_current_id,
+            #{value => "true | false",
+              desc =>
+                  ?T("If this option is set to 'true', the current "
+                     "roster version number is stored on the database. "
+                     "If set to 'false', the roster version number is "
+                     "calculated on the fly each time. Enabling this "
+                     "option reduces the load for both ejabberd and the database. "
+                     "This option does not affect the client in any way. "
+                     "This option is only useful if option 'versioning' is "
+                     "set to 'true'. The default value is 'false'. "
+                     "IMPORTANT: if you use 'mod_shared_roster' or "
+                     "'mod_shared_roster_ldap', you must set the value "
+                     "of the option to 'false'.")}},
+           {db_type,
+            #{value => "mnesia | sql",
+              desc =>
+                  ?T("Same as top-level 'default_db' option, but applied to this module only.")}},
+           {use_cache,
+            #{value => "true | false",
+              desc =>
+                  ?T("Same as top-level 'use_cache' option, but applied to this module only.")}},
+           {cache_size,
+            #{value => "pos_integer() | infinity",
+              desc =>
+                  ?T("Same as top-level 'cache_size' option, but applied to this module only.")}},
+           {cache_missed,
+            #{value => "true | false",
+              desc =>
+                  ?T("Same as top-level 'cache_missed' option, but applied to this module only.")}},
+           {cache_life_time,
+            #{value => "timeout()",
+              desc =>
+                  ?T("Same as top-level 'cache_life_time' option, but applied to this module only.")}}],
+      example =>
+          ["modules:",
+           "  ...",
+           "  mod_roster:",
+           "    versioning: true",
+           "    store_current_id: false",
+           "  ..."]}.

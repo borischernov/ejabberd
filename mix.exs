@@ -3,7 +3,7 @@ defmodule Ejabberd.Mixfile do
 
   def project do
     [app: :ejabberd,
-     version: "19.8.0",
+     version: "20.3.0",
      description: description(),
      elixir: "~> 1.4",
      elixirc_paths: ["lib"],
@@ -19,7 +19,7 @@ defmodule Ejabberd.Mixfile do
 
   def description do
     """
-    Robust, ubiquitous and massively scalable Jabber / XMPP Instant Messaging platform.
+    Robust, Ubiquitous and Massively Scalable Messaging Platform (XMPP, MQTT, SIP Server)
     """
   end
 
@@ -29,7 +29,8 @@ defmodule Ejabberd.Mixfile do
      included_applications: [:lager, :mnesia, :inets, :p1_utils, :cache_tab,
                              :fast_tls, :stringprep, :fast_xml, :xmpp, :mqtree,
                              :stun, :fast_yaml, :esip, :jiffy, :p1_oauth2,
-                             :eimp, :base64url, :jose, :pkix, :os_mon, :yconf]
+                             :eimp, :base64url, :jose, :pkix, :os_mon, :yconf,
+                             :p1_acme, :idna]
      ++ cond_apps()]
   end
 
@@ -50,12 +51,25 @@ defmodule Ejabberd.Mixfile do
     end
   end
 
+  defp if_version_below(ver, okResult) do
+    if :erlang.system_info(:otp_release) < ver do
+      okResult
+    else
+      []
+    end
+  end
+
   defp erlc_options do
     # Use our own includes + includes from all dependencies
     includes = ["include"] ++ deps_include(["fast_xml", "xmpp", "p1_utils"])
-    [:debug_info, {:d, :ELIXIR_ENABLED}] ++ cond_options() ++ Enum.map(includes, fn(path) -> {:i, path} end) ++
-    if_version_above('20', [{:d, :DEPRECATED_GET_STACKTRACE}]) ++
-    if_function_exported(:erl_error, :format_exception, 6, [{:d, :HAVE_ERL_ERROR}])
+    result = [:debug_info, {:d, :ELIXIR_ENABLED}] ++
+             cond_options() ++
+             Enum.map(includes, fn (path) -> {:i, path} end) ++
+             if_version_above('20', [{:d, :DEPRECATED_GET_STACKTRACE}]) ++
+             if_version_below('22', [{:d, :LAGER}]) ++
+             if_function_exported(:erl_error, :format_exception, 6, [{:d, :HAVE_ERL_ERROR}])
+    defines = for {:d, value} <- result, do: {:d, value}
+    result ++ [{:d, :ALL_DEFS, defines}]
   end
 
   defp cond_options do
@@ -71,7 +85,7 @@ defmodule Ejabberd.Mixfile do
     [{:lager, "~> 3.6.0"},
      {:p1_utils, "~> 1.0"},
      {:fast_xml, "~> 1.1"},
-     {:xmpp, "~> 1.4.0"},
+     {:xmpp, "~> 1.4"},
      {:cache_tab, "~> 1.0"},
      {:stringprep, "~> 1.0"},
      {:fast_yaml, "~> 1.0"},
@@ -81,7 +95,7 @@ defmodule Ejabberd.Mixfile do
      {:p1_mysql, "~> 1.0"},
      {:mqtree, "~> 1.0"},
      {:p1_pgsql, "~> 1.1"},
-     {:jiffy, "~> 0.14.7"},
+     {:jiffy, "~> 1.0"},
      {:p1_oauth2, "~> 0.6.1"},
      {:distillery, "~> 2.0"},
      {:pkix, "~> 1.0"},
@@ -89,7 +103,9 @@ defmodule Ejabberd.Mixfile do
      {:eimp, "~> 1.0"},
      {:base64url, "~> 0.0.1"},
      {:yconf, "~> 1.0"},
-     {:jose, "~> 1.8"}]
+     {:jose, "~> 1.8"},
+     {:idna, "~> 6.0"},
+     {:p1_acme, "~> 1.0"}]
     ++ cond_deps()
   end
 
@@ -117,6 +133,7 @@ defmodule Ejabberd.Mixfile do
   defp cond_apps do
     for {:true, app} <- [{config(:redis), :eredis},
                          {config(:mysql), :p1_mysql},
+                         {config(:odbc), :odbc},
                          {config(:pgsql), :p1_pgsql},
                          {config(:sqlite), :sqlite3},
                          {config(:zlib), :ezlib}], do:

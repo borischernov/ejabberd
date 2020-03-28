@@ -5,7 +5,7 @@
 %%% Created :  8 Dec 2004 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -44,6 +44,8 @@
 	 escape_like/1,
 	 escape_like_arg/1,
 	 escape_like_arg_circumflex/1,
+         to_string_literal/2,
+         to_string_literal_t/1,
 	 to_bool/1,
 	 sqlite_db/1,
 	 sqlite_file/1,
@@ -225,6 +227,8 @@ escape_like_arg(S) when is_binary(S) ->
 escape_like_arg($%) -> <<"\\%">>;
 escape_like_arg($_) -> <<"\\_">>;
 escape_like_arg($\\) -> <<"\\\\">>;
+escape_like_arg($[) -> <<"\\[">>;     % For MSSQL
+escape_like_arg($]) -> <<"\\]">>;
 escape_like_arg(C) when is_integer(C), C >= 0, C =< 255 -> <<C>>.
 
 escape_like_arg_circumflex(S) when is_binary(S) ->
@@ -249,7 +253,22 @@ to_list(EscapeFun, Val) ->
 
 to_array(EscapeFun, Val) ->
     Escaped = lists:join(<<",">>, lists:map(EscapeFun, Val)),
-    [<<"{">>, Escaped, <<"}">>].
+    lists:flatten([<<"{">>, Escaped, <<"}">>]).
+
+to_string_literal(odbc, S) ->
+    <<"'", (escape(S))/binary, "'">>;
+to_string_literal(mysql, S) ->
+    <<"'", (escape(S))/binary, "'">>;
+to_string_literal(mssql, S) ->
+    <<"'", (standard_escape(S))/binary, "'">>;
+to_string_literal(sqlite, S) ->
+    <<"'", (standard_escape(S))/binary, "'">>;
+to_string_literal(pgsql, S) ->
+    <<"E'", (escape(S))/binary, "'">>.
+
+to_string_literal_t(S) ->
+    State = get(?STATE_KEY),
+    to_string_literal(State#state.db_type, S).
 
 encode_term(Term) ->
     escape(list_to_binary(
@@ -264,14 +283,14 @@ decode_term(Bin) ->
 	Term
     catch _:{badmatch, {error, {Line, Mod, Reason}, _}} ->
 	    ?ERROR_MSG("Corrupted Erlang term in SQL database:~n"
-		       "** Scanner error: at line ~B: ~s~n"
-		       "** Term: ~s",
+		       "** Scanner error: at line ~B: ~ts~n"
+		       "** Term: ~ts",
 		       [Line, Mod:format_error(Reason), Bin]),
 	    erlang:error(badarg);
 	  _:{badmatch, {error, {Line, Mod, Reason}}} ->
 	    ?ERROR_MSG("Corrupted Erlang term in SQL database:~n"
-		       "** Parser error: at line ~B: ~s~n"
-		       "** Term: ~s",
+		       "** Parser error: at line ~B: ~ts~n"
+		       "** Term: ~ts",
 		       [Line, Mod:format_error(Reason), Bin]),
 	    erlang:error(badarg)
     end.
@@ -290,7 +309,7 @@ sqlite_file(Host) ->
 		{ok, Cwd} ->
 		    filename:join([Cwd|Path]);
 		{error, Reason} ->
-		    ?ERROR_MSG("Failed to get current directory: ~s",
+		    ?ERROR_MSG("Failed to get current directory: ~ts",
 			       [file:format_error(Reason)]),
 		    filename:join(Path)
 	    end;
@@ -382,7 +401,7 @@ connecting({sql_cmd, Command, Timestamp} = Req, From,
 			State#state.pending_requests)
 	catch error:full ->
 		Err = <<"SQL request queue is overfilled">>,
-		?ERROR_MSG("~s, bouncing all pending requests", [Err]),
+		?ERROR_MSG("~ts, bouncing all pending requests", [Err]),
 		Q = p1_queue:dropwhile(
 		      fun({sql_cmd, _, To, TS}) ->
 			      reply(To, {error, Err}, TS),
@@ -497,7 +516,7 @@ inner_transaction(F) ->
       ?TOP_LEVEL_TXN ->
 	  {backtrace, T} = process_info(self(), backtrace),
 	  ?ERROR_MSG("Inner transaction called at outer txn "
-		     "level. Trace: ~s",
+		     "level. Trace: ~ts",
 		     [T]),
 	  erlang:exit(implementation_faulty);
       _N -> ok
@@ -519,19 +538,19 @@ outer_transaction(F, NRestarts, _Reason) ->
       _N ->
 	  {backtrace, T} = process_info(self(), backtrace),
 	  ?ERROR_MSG("Outer transaction called at inner txn "
-		     "level. Trace: ~s",
+		     "level. Trace: ~ts",
 		     [T]),
 	  erlang:exit(implementation_faulty)
     end,
-    sql_query_internal([<<"begin;">>]),
+    sql_begin(),
     put(?NESTING_KEY, PreviousNestingLevel + 1),
     try F() of
 	Res ->
-	    sql_query_internal([<<"commit;">>]),
+	    sql_commit(),
 	    {atomic, Res}
     catch
 	?EX_RULE(throw, {aborted, Reason}, _) when NRestarts > 0 ->
-	    sql_query_internal([<<"rollback;">>]),
+	    sql_rollback(),
             put(?NESTING_KEY, ?TOP_LEVEL_TXN),
 	    outer_transaction(F, NRestarts - 1, Reason);
 	?EX_RULE(throw, {aborted, Reason}, Stack) when NRestarts =:= 0 ->
@@ -542,10 +561,10 @@ outer_transaction(F, NRestarts, _Reason) ->
 		       "== ~p",
 		       [?MAX_TRANSACTION_RESTARTS, Reason,
 			StackTrace, get(?STATE_KEY)]),
-	    sql_query_internal([<<"rollback;">>]),
+	    sql_rollback(),
 	    {aborted, Reason};
 	?EX_RULE(exit, Reason, _) ->
-	    sql_query_internal([<<"rollback;">>]),
+	    sql_rollback(),
 	    {aborted, Reason}
     end.
 
@@ -583,14 +602,23 @@ sql_query_internal(#sql_query{} = Query) ->
                     Key = {?PREPARE_KEY, Query#sql_query.hash},
                     case get(Key) of
                         undefined ->
-                            case pgsql_prepare(Query, State) of
-                                {ok, _, _, _} ->
-                                    put(Key, prepared);
-                                {error, Error} ->
-                                    ?ERROR_MSG("PREPARE failed for SQL query "
+                            Host = State#state.host,
+                            PreparedStatements =
+                                ejabberd_option:sql_prepared_statements(Host),
+                            case PreparedStatements of
+                                false ->
+                                    put(Key, ignore);
+                                true ->
+                                    case pgsql_prepare(Query, State) of
+                                        {ok, _, _, _} ->
+                                            put(Key, prepared);
+                                        {error, Error} ->
+                                            ?ERROR_MSG(
+                                               "PREPARE failed for SQL query "
                                                "at ~p: ~p",
                                                [Query#sql_query.loc, Error]),
-                                    put(Key, ignore)
+                                            put(Key, ignore)
+                                    end
                             end;
                         _ ->
                             ok
@@ -599,7 +627,7 @@ sql_query_internal(#sql_query{} = Query) ->
                         prepared ->
                             pgsql_execute_sql_query(Query, State);
                         _ ->
-                            generic_sql_query(Query)
+                            pgsql_sql_query(Query)
                     end;
                 mysql ->
                     generic_sql_query(Query);
@@ -616,7 +644,7 @@ sql_query_internal(#sql_query{} = Query) ->
 		{error, <<"shutdown">>};
 	      ?EX_RULE(Class, Reason, Stack) ->
 		StackTrace = ?EX_STACK(Stack),
-                ?ERROR_MSG("Internal error while processing SQL query:~n** ~s",
+                ?ERROR_MSG("Internal error while processing SQL query:~n** ~ts",
 			   [misc:format_exception(2, Class, Reason, StackTrace)]),
                 {error, <<"internal error">>}
         end,
@@ -629,7 +657,7 @@ sql_query_internal(F) when is_function(F) ->
     end;
 sql_query_internal(Query) ->
     State = get(?STATE_KEY),
-    ?DEBUG("SQL: \"~s\"", [Query]),
+    ?DEBUG("SQL: \"~ts\"", [Query]),
     QueryTimeout = query_timeout(State#state.host),
     Res = case State#state.db_type of
 	    odbc ->
@@ -692,7 +720,27 @@ generic_escape() ->
 		boolean = fun(true) -> <<"1">>;
                              (false) -> <<"0">>
                           end,
-		in_array_string = fun(X) -> <<"'", (escape(X))/binary, "'">> end
+		in_array_string = fun(X) -> <<"'", (escape(X))/binary, "'">> end,
+                like_escape = fun() -> <<"">> end
+               }.
+
+pgsql_sql_query(SQLQuery) ->
+    sql_query_format_res(
+      sql_query_internal(pgsql_sql_query_format(SQLQuery)),
+      SQLQuery).
+
+pgsql_sql_query_format(SQLQuery) ->
+    Args = (SQLQuery#sql_query.args)(pgsql_escape()),
+    (SQLQuery#sql_query.format_query)(Args).
+
+pgsql_escape() ->
+    #sql_escape{string = fun(X) -> <<"E'", (escape(X))/binary, "'">> end,
+		integer = fun(X) -> misc:i2l(X) end,
+		boolean = fun(true) -> <<"'t'">>;
+                             (false) -> <<"'f'">>
+                          end,
+		in_array_string = fun(X) -> <<"E'", (escape(X))/binary, "'">> end,
+                like_escape = fun() -> <<"ESCAPE E'\\\\'">> end
                }.
 
 sqlite_sql_query(SQLQuery) ->
@@ -710,7 +758,8 @@ sqlite_escape() ->
 		boolean = fun(true) -> <<"1">>;
                              (false) -> <<"0">>
                           end,
-		in_array_string = fun(X) -> <<"'", (standard_escape(X))/binary, "'">> end
+		in_array_string = fun(X) -> <<"'", (standard_escape(X))/binary, "'">> end,
+                like_escape = fun() -> <<"ESCAPE '\\'">> end
                }.
 
 standard_escape(S) ->
@@ -723,9 +772,20 @@ mssql_sql_query(SQLQuery) ->
     sqlite_sql_query(SQLQuery).
 
 pgsql_prepare(SQLQuery, State) ->
-    Escape = #sql_escape{_ = fun(X) -> X end},
-    N = length((SQLQuery#sql_query.args)(Escape)),
-    Args = [<<$$, (integer_to_binary(I))/binary>> || I <- lists:seq(1, N)],
+    Escape = #sql_escape{_ = fun(_) -> arg end,
+                         like_escape = fun() -> escape end},
+    {RArgs, _} =
+        lists:foldl(
+	    fun(arg, {Acc, I}) ->
+		{[<<$$, (integer_to_binary(I))/binary>> | Acc], I + 1};
+	       (escape, {Acc, I}) ->
+		   {[<<"ESCAPE E'\\\\'">> | Acc], I};
+	       (List, {Acc, I}) when is_list(List) ->
+		   {[<<$$, (integer_to_binary(I))/binary>> | Acc], I + 1}
+	    end, {[], 1}, (SQLQuery#sql_query.args)(Escape)),
+    Args = lists:reverse(RArgs),
+    %N = length((SQLQuery#sql_query.args)(Escape)),
+    %Args = [<<$$, (integer_to_binary(I))/binary>> || I <- lists:seq(1, N)],
     Query = (SQLQuery#sql_query.format_query)(Args),
     pgsql:prepare(State#state.db_ref, SQLQuery#sql_query.hash, Query).
 
@@ -735,16 +795,18 @@ pgsql_execute_escape() ->
 		boolean = fun(true) -> "1";
                              (false) -> "0"
                           end,
-		in_array_string = fun(X) -> <<"\"", (escape(X))/binary, "\"">> end
+		in_array_string = fun(X) -> <<"\"", (escape(X))/binary, "\"">> end,
+                like_escape = fun() -> ignore end
                }.
 
 pgsql_execute_sql_query(SQLQuery, State) ->
     Args = (SQLQuery#sql_query.args)(pgsql_execute_escape()),
+    Args2 = lists:filter(fun(ignore) -> false; (_) -> true end, Args),
     ExecuteRes =
-        pgsql:execute(State#state.db_ref, SQLQuery#sql_query.hash, Args),
+        pgsql:execute(State#state.db_ref, SQLQuery#sql_query.hash, Args2),
 %    {T, ExecuteRes} =
 %        timer:tc(pgsql, execute, [State#state.db_ref, SQLQuery#sql_query.hash, Args]),
-%    io:format("T ~s ~p~n", [SQLQuery#sql_query.hash, T]),
+%    io:format("T ~ts ~p~n", [SQLQuery#sql_query.hash, T]),
     Res = pgsql_execute_to_odbc(ExecuteRes),
     sql_query_format_res(Res, SQLQuery).
 
@@ -759,7 +821,7 @@ sql_query_format_res({selected, _, Rows}, SQLQuery) ->
 		      ?EX_RULE(Class, Reason, Stack) ->
 			  StackTrace = ?EX_STACK(Stack),
                           ?ERROR_MSG("Error while processing SQL query result:~n"
-                                     "** Row: ~p~n** ~s",
+                                     "** Row: ~p~n** ~ts",
                                      [Row,
 				      misc:format_exception(2, Class, Reason, StackTrace)]),
                           []
@@ -771,6 +833,22 @@ sql_query_format_res(Res, _SQLQuery) ->
 
 sql_query_to_iolist(SQLQuery) ->
     generic_sql_query_format(SQLQuery).
+
+sql_begin() ->
+    sql_query_internal(
+      [{mssql, [<<"begin transaction;">>]},
+       {any, [<<"begin;">>]}]).
+
+sql_commit() ->
+    sql_query_internal(
+      [{mssql, [<<"commit transaction;">>]},
+       {any, [<<"commit;">>]}]).
+
+sql_rollback() ->
+    sql_query_internal(
+      [{mssql, [<<"rollback transaction;">>]},
+       {any, [<<"rollback;">>]}]).
+
 
 %% Generate the OTP callback return tuple depending on the driver result.
 abort_on_driver_error({error, <<"query timed out">>} = Reply, From, Timestamp) ->
@@ -925,12 +1003,18 @@ pgsql_execute_to_odbc(_) -> {updated, undefined}.
 
 %% part of init/1
 %% Open a database connection to MySQL
-mysql_connect(Server, Port, DB, Username, Password, ConnectTimeout,  _, _) ->
+mysql_connect(Server, Port, DB, Username, Password, ConnectTimeout, Transport, _) ->
+    SSLOpts = case Transport of
+		  ssl ->
+		      [ssl_required];
+		  _ ->
+		      []
+	      end,
     case p1_mysql_conn:start(binary_to_list(Server), Port,
 			     binary_to_list(Username),
 			     binary_to_list(Password),
 			     binary_to_list(DB),
-			     ConnectTimeout, fun log/3)
+			     ConnectTimeout, fun log/3, SSLOpts)
 	of
 	{ok, Ref} ->
 	    p1_mysql_conn:fetch(
@@ -1036,8 +1120,10 @@ warn_if_ssl_unsupported(tcp, _) ->
     ok;
 warn_if_ssl_unsupported(ssl, pgsql) ->
     ok;
+warn_if_ssl_unsupported(ssl, mysql) ->
+    ok;
 warn_if_ssl_unsupported(ssl, Type) ->
-    ?WARNING_MSG("SSL connection is not supported for ~s", [Type]).
+    ?WARNING_MSG("SSL connection is not supported for ~ts", [Type]).
 
 get_ssl_opts(ssl, Host) ->
     Opts1 = case ejabberd_option:sql_ssl_certfile(Host) of
@@ -1073,8 +1159,8 @@ init_mssql(Host) ->
 	     undefined -> <<"ejabberd">>;
 	     D -> D
 	 end,
-    FreeTDS = io_lib:fwrite("[~s]~n"
-			    "\thost = ~s~n"
+    FreeTDS = io_lib:fwrite("[~ts]~n"
+			    "\thost = ~ts~n"
 			    "\tport = ~p~n"
 			    "\tclient charset = UTF-8~n"
 			    "\ttds version = 7.1~n",
@@ -1085,16 +1171,16 @@ init_mssql(Host) ->
 			     "Setup = libtdsS.so~n"
 			     "UsageCount = 1~n"
 			     "FileUsage = 1~n", []),
-    ODBCINI = io_lib:fwrite("[~s]~n"
+    ODBCINI = io_lib:fwrite("[~ts]~n"
 			    "Description = MS SQL~n"
 			    "Driver = freetds~n"
-			    "Servername = ~s~n"
-			    "Database = ~s~n"
+			    "Servername = ~ts~n"
+			    "Database = ~ts~n"
 			    "Port = ~p~n",
 			    [Host, Host, DB, Port]),
-    ?DEBUG("~s:~n~s", [freetds_config(), FreeTDS]),
-    ?DEBUG("~s:~n~s", [odbcinst_config(), ODBCINST]),
-    ?DEBUG("~s:~n~s", [odbc_config(), ODBCINI]),
+    ?DEBUG("~ts:~n~ts", [freetds_config(), FreeTDS]),
+    ?DEBUG("~ts:~n~ts", [odbcinst_config(), ODBCINST]),
+    ?DEBUG("~ts:~n~ts", [odbc_config(), ODBCINI]),
     case filelib:ensure_dir(freetds_config()) of
 	ok ->
 	    try
@@ -1106,12 +1192,12 @@ init_mssql(Host) ->
 		os:putenv("FREETDSCONF", freetds_config()),
 		ok
 	    catch error:{badmatch, {error, Reason} = Err} ->
-		    ?ERROR_MSG("Failed to create temporary files in ~s: ~s",
+		    ?ERROR_MSG("Failed to create temporary files in ~ts: ~ts",
 			       [tmp_dir(), file:format_error(Reason)]),
 		    Err
 	    end;
 	{error, Reason} = Err ->
-	    ?ERROR_MSG("Failed to create temporary directory ~s: ~s",
+	    ?ERROR_MSG("Failed to create temporary directory ~ts: ~ts",
 		       [tmp_dir(), file:format_error(Reason)]),
 	    Err
     end.
@@ -1152,22 +1238,22 @@ current_time() ->
 %% ***IMPORTANT*** This error format requires extended_errors turned on.
 extended_error({"08S01", _, Reason}) ->
     % TCP Provider: The specified network name is no longer available
-    ?DEBUG("ODBC Link Failure: ~s", [Reason]),
+    ?DEBUG("ODBC Link Failure: ~ts", [Reason]),
     <<"Communication link failure">>;
 extended_error({"08001", _, Reason}) ->
     % Login timeout expired
-    ?DEBUG("ODBC Connect Timeout: ~s", [Reason]),
+    ?DEBUG("ODBC Connect Timeout: ~ts", [Reason]),
     <<"SQL connection failed">>;
 extended_error({"IMC01", _, Reason}) ->
     % The connection is broken and recovery is not possible
-    ?DEBUG("ODBC Link Failure: ~s", [Reason]),
+    ?DEBUG("ODBC Link Failure: ~ts", [Reason]),
     <<"Communication link failure">>;
 extended_error({"IMC06", _, Reason}) ->
     % The connection is broken and recovery is not possible
-    ?DEBUG("ODBC Link Failure: ~s", [Reason]),
+    ?DEBUG("ODBC Link Failure: ~ts", [Reason]),
     <<"Communication link failure">>;
 extended_error({Code, _, Reason}) ->
-    ?DEBUG("ODBC Error ~s: ~s", [Code, Reason]),
+    ?DEBUG("ODBC Error ~ts: ~ts", [Code, Reason]),
     iolist_to_binary(Reason);
 extended_error(Error) ->
     Error.
@@ -1176,14 +1262,14 @@ check_error({error, Why} = Err, _Query) when Why == killed ->
     Err;
 check_error({error, Why}, #sql_query{} = Query) ->
     Err = extended_error(Why),
-    ?ERROR_MSG("SQL query '~s' at ~p failed: ~p",
+    ?ERROR_MSG("SQL query '~ts' at ~p failed: ~p",
                [Query#sql_query.hash, Query#sql_query.loc, Err]),
     {error, Err};
 check_error({error, Why}, Query) ->
     Err = extended_error(Why),
     case catch iolist_to_binary(Query) of
         SQuery when is_binary(SQuery) ->
-            ?ERROR_MSG("SQL query '~s' failed: ~p", [SQuery, Err]);
+            ?ERROR_MSG("SQL query '~ts' failed: ~p", [SQuery, Err]);
         _ ->
             ?ERROR_MSG("SQL query ~p failed: ~p", [Query, Err])
     end,

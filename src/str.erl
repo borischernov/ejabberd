@@ -5,7 +5,7 @@
 %%% Created : 23 Feb 2012 by Evgeniy Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -286,7 +286,7 @@ suffix(B1, B2) ->
 -spec format(io:format(), list()) -> binary().
 
 format(Format, Args) ->
-    iolist_to_binary(io_lib:format(Format, Args)).
+    unicode:characters_to_binary(io_lib:format(Format, Args)).
 
 
 -spec sha(iodata()) -> binary().

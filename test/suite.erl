@@ -3,7 +3,7 @@
 %%% Created : 27 Jun 2013 by Evgeniy Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -62,6 +62,7 @@ init_config(Config) ->
 		       {s2s_port, 5269},
 		       {component_port, 5270},
 		       {web_port, 5280},
+		       {proxy_port, 7777},
 		       {password, Password},
 		       {mysql_server, <<"localhost">>},
 		       {mysql_port, 3306},

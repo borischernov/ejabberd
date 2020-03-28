@@ -5,7 +5,7 @@
 %%% Created : 20 Jul 2011 by Evgeniy Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -518,7 +518,7 @@ handle_event({change_shaper, Shaper}, StateName,
 	     State) ->
     {next_state, StateName, State#state{shaper_state = Shaper}};
 handle_event(_Event, StateName, State) ->
-    ?ERROR_MSG("Unexpected event in '~s': ~p",
+    ?ERROR_MSG("Unexpected event in '~ts': ~p",
 	       [StateName, _Event]),
     {next_state, StateName, State}.
 
@@ -558,7 +558,7 @@ handle_sync_event(deactivate_socket, _From, StateName,
     {reply, ok, StateName,
      StateData#state{c2s_pid = undefined}};
 handle_sync_event(_Event, _From, StateName, State) ->
-    ?ERROR_MSG("Unexpected sync event in '~s': ~p",
+    ?ERROR_MSG("Unexpected sync event in '~ts': ~p",
 	       [StateName, _Event]),
     {reply, {error, badarg}, StateName, State}.
 

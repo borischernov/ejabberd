@@ -3,7 +3,7 @@
 %%% Created : 15 Oct 2016 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -784,7 +784,7 @@ change_affiliation_master(Config) ->
 		  #muc_item{affiliation = Aff} ->
 		      ok
 	      end
-      end, [{member, participant, available}, {none, participant, available},
+      end, [{member, participant, available}, {none, visitor, available},
 	    {admin, moderator, available}, {owner, moderator, available},
 	    {outcast, none, unavailable}]),
     ok = leave(Config),

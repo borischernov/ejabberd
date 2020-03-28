@@ -5,7 +5,7 @@
 %%% Created : 12 Mar 2006 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -34,12 +34,12 @@
 -behaviour(gen_mod).
 
 %% API
--export([start/2, stop/1, reload/3,
+-export([start/2, stop/1, reload/3, get_url/1,
 	 check_access_log/2, add_to_log/5]).
 
 -export([init/1, handle_call/3, handle_cast/2,
 	 handle_info/2, terminate/2, code_change/3,
-	 mod_opt_type/1, mod_options/1, depends/2]).
+	 mod_opt_type/1, mod_options/1, depends/2, mod_doc/0]).
 
 -include("logger.hrl").
 -include("xmpp.hrl").
@@ -88,6 +88,19 @@ check_access_log(Host, From) ->
 	of
       {'EXIT', _Error} -> deny;
       Res -> Res
+    end.
+
+-spec get_url(#state{}) -> {ok, binary()} | error.
+get_url(#state{room = Room, host = Host, server_host = ServerHost}) ->
+    case mod_muc_log_opt:url(ServerHost) of
+	undefined -> error;
+	URL ->
+	    case mod_muc_log_opt:dirname(ServerHost) of
+		room_jid ->
+		    {ok, <<URL/binary, $/, Room/binary, $@, Host/binary>>};
+		room_name ->
+		    {ok, <<URL/binary, $/, Room/binary>>}
+	    end
     end.
 
 depends(_Host, _Opts) ->
@@ -257,26 +270,26 @@ write_last_lines(F, Images_dir, _FileFormat) ->
     fw(F, <<"<div class=\"legend\">">>),
     fw(F,
        <<"  <a href=\"http://www.ejabberd.im\"><img "
-	 "style=\"border:0\" src=\"~s/powered-by-ejabbe"
+	 "style=\"border:0\" src=\"~ts/powered-by-ejabbe"
 	 "rd.png\" alt=\"Powered by ejabberd - robust, scalable and extensible XMPP server\"/></a>">>,
        [Images_dir]),
     fw(F,
        <<"  <a href=\"http://www.erlang.org/\"><img "
-	 "style=\"border:0\" src=\"~s/powered-by-erlang"
+	 "style=\"border:0\" src=\"~ts/powered-by-erlang"
 	 ".png\" alt=\"Powered by Erlang\"/></a>">>,
        [Images_dir]),
     fw(F, <<"<span class=\"w3c\">">>),
     fw(F,
        <<"  <a href=\"http://validator.w3.org/check?uri"
 	 "=referer\"><img style=\"border:0;width:88px;h"
-	 "eight:31px\" src=\"~s/valid-xhtml10.png\" "
+	 "eight:31px\" src=\"~ts/valid-xhtml10.png\" "
 	 "alt=\"Valid XHTML 1.0 Transitional\" "
 	 "/></a>">>,
        [Images_dir]),
     fw(F,
        <<"  <a href=\"http://jigsaw.w3.org/css-validato"
 	 "r/\"><img style=\"border:0;width:88px;height:"
-	 "31px\" src=\"~s/vcss.png\" alt=\"Valid "
+	 "31px\" src=\"~ts/vcss.png\" alt=\"Valid "
 	 "CSS!\"/></a>">>,
        [Images_dir]),
     fw(F, <<"</span></div></body></html>">>).
@@ -345,7 +358,7 @@ add_message_to_log(Nick1, Message, RoomJID, Opts,
 		 RoomConfig = roomconfig_to_string(Room#room.config,
 						   Lang, FileFormat),
 		 put_room_config(F, RoomConfig, Lang, FileFormat),
-		 io_lib:format("<font class=\"mrcm\">~s</font><br/>",
+		 io_lib:format("<font class=\"mrcm\">~ts</font><br/>",
 			       [tr(Lang, ?T("Chatroom configuration modified"))]);
 	     {roomconfig_change, Occupants} ->
 		 RoomConfig = roomconfig_to_string(Room#room.config,
@@ -354,70 +367,70 @@ add_message_to_log(Nick1, Message, RoomJID, Opts,
 		 RoomOccupants = roomoccupants_to_string(Occupants,
 							 FileFormat),
 		 put_room_occupants(F, RoomOccupants, Lang, FileFormat),
-		 io_lib:format("<font class=\"mrcm\">~s</font><br/>",
+		 io_lib:format("<font class=\"mrcm\">~ts</font><br/>",
 			       [tr(Lang, ?T("Chatroom configuration modified"))]);
 	     join ->
-		 io_lib:format("<font class=\"mj\">~s ~s</font><br/>",
+		 io_lib:format("<font class=\"mj\">~ts ~ts</font><br/>",
 			       [Nick, tr(Lang, ?T("joins the room"))]);
 	     leave ->
-		 io_lib:format("<font class=\"ml\">~s ~s</font><br/>",
+		 io_lib:format("<font class=\"ml\">~ts ~ts</font><br/>",
 			       [Nick, tr(Lang, ?T("leaves the room"))]);
 	     {leave, Reason} ->
-		 io_lib:format("<font class=\"ml\">~s ~s: ~s</font><br/>",
+		 io_lib:format("<font class=\"ml\">~ts ~ts: ~ts</font><br/>",
 			       [Nick, tr(Lang, ?T("leaves the room")),
 				htmlize(Reason, NoFollow, FileFormat)]);
 	     {kickban, 301, <<"">>} ->
-		 io_lib:format("<font class=\"mb\">~s ~s</font><br/>",
+		 io_lib:format("<font class=\"mb\">~ts ~ts</font><br/>",
 			       [Nick, tr(Lang, ?T("has been banned"))]);
 	     {kickban, 301, Reason} ->
-		 io_lib:format("<font class=\"mb\">~s ~s: ~s</font><br/>",
+		 io_lib:format("<font class=\"mb\">~ts ~ts: ~ts</font><br/>",
 			       [Nick, tr(Lang, ?T("has been banned")),
 				htmlize(Reason, FileFormat)]);
 	     {kickban, 307, <<"">>} ->
-		 io_lib:format("<font class=\"mk\">~s ~s</font><br/>",
+		 io_lib:format("<font class=\"mk\">~ts ~ts</font><br/>",
 			       [Nick, tr(Lang, ?T("has been kicked"))]);
 	     {kickban, 307, Reason} ->
-		 io_lib:format("<font class=\"mk\">~s ~s: ~s</font><br/>",
+		 io_lib:format("<font class=\"mk\">~ts ~ts: ~ts</font><br/>",
 			       [Nick, tr(Lang, ?T("has been kicked")),
 				htmlize(Reason, FileFormat)]);
 	     {kickban, 321, <<"">>} ->
-		 io_lib:format("<font class=\"mk\">~s ~s</font><br/>",
+		 io_lib:format("<font class=\"mk\">~ts ~ts</font><br/>",
 			       [Nick,
 				tr(Lang, ?T("has been kicked because of an affiliation "
 					    "change"))]);
 	     {kickban, 322, <<"">>} ->
-		 io_lib:format("<font class=\"mk\">~s ~s</font><br/>",
+		 io_lib:format("<font class=\"mk\">~ts ~ts</font><br/>",
 			       [Nick,
 				tr(Lang, ?T("has been kicked because the room has "
 					    "been changed to members-only"))]);
 	     {kickban, 332, <<"">>} ->
-		 io_lib:format("<font class=\"mk\">~s ~s</font><br/>",
+		 io_lib:format("<font class=\"mk\">~ts ~ts</font><br/>",
 			       [Nick,
 				tr(Lang, ?T("has been kicked because of a system "
 					    "shutdown"))]);
 	     {nickchange, OldNick} ->
-		 io_lib:format("<font class=\"mnc\">~s ~s ~s</font><br/>",
+		 io_lib:format("<font class=\"mnc\">~ts ~ts ~ts</font><br/>",
 			       [htmlize(OldNick, FileFormat),
 				tr(Lang, ?T("is now known as")), Nick]);
 	     {subject, T} ->
-		 io_lib:format("<font class=\"msc\">~s~s~s</font><br/>",
+		 io_lib:format("<font class=\"msc\">~ts~ts~ts</font><br/>",
 			       [Nick, tr(Lang, ?T(" has set the subject to: ")),
 				htmlize(T, NoFollow, FileFormat)]);
 	     {body, T} ->
 		 case {ejabberd_regexp:run(T, <<"^/me ">>), Nick} of
 		   {_, <<"">>} ->
-		       io_lib:format("<font class=\"msm\">~s</font><br/>",
+		       io_lib:format("<font class=\"msm\">~ts</font><br/>",
 				     [htmlize(T, NoFollow, FileFormat)]);
 		   {match, _} ->
-		       io_lib:format("<font class=\"mne\">~s ~s</font><br/>",
+		       io_lib:format("<font class=\"mne\">~ts ~ts</font><br/>",
 				     [Nick,
 				      str:substr(htmlize(T, FileFormat), 5)]);
 		   {nomatch, _} ->
-		       io_lib:format("<font class=\"mn\">~s</font> ~s<br/>",
+		       io_lib:format("<font class=\"mn\">~ts</font> ~ts<br/>",
 				     [Nick2, htmlize(T, NoFollow, FileFormat)])
 		 end;
 	     {room_existence, RoomNewExistence} ->
-		 io_lib:format("<font class=\"mrcm\">~s</font><br/>",
+		 io_lib:format("<font class=\"mrcm\">~ts</font><br/>",
 			       [get_room_existence_string(RoomNewExistence,
 							  Lang)])
 	   end,
@@ -425,14 +438,12 @@ add_message_to_log(Nick1, Message, RoomJID, Opts,
     STime = io_lib:format("~2..0w:~2..0w:~2..0w",
                           [Hour, Minute, Second]),
     {_, _, Microsecs} = Now,
-    STimeUnique = io_lib:format("~s.~w",
+    STimeUnique = io_lib:format("~ts.~w",
 				[STime, Microsecs]),
-    catch fw(F,
-       list_to_binary(
-         io_lib:format("<a id=\"~s\" name=\"~s\" href=\"#~s\" "
-                       "class=\"ts\">[~s]</a> ",
+    fw(F, io_lib:format("<a id=\"~ts\" name=\"~ts\" href=\"#~ts\" "
+                       "class=\"ts\">[~ts]</a> ",
                        [STimeUnique, STimeUnique, STimeUnique, STime])
-	 ++ Text),
+	 ++ Text,
        FileFormat),
     file:close(F),
     ok.
@@ -477,12 +488,12 @@ get_dateweek(Date, Lang) ->
     list_to_binary(
       case Lang of
           <<"en">> ->
-              io_lib:format("~s, ~s ~w, ~w", [Weekday, Month, D, Y]);
+              io_lib:format("~ts, ~ts ~w, ~w", [Weekday, Month, D, Y]);
           <<"es">> ->
-              io_lib:format("~s ~w de ~s de ~w",
+              io_lib:format("~ts ~w de ~ts de ~w",
                             [Weekday, D, Month, Y]);
           _ ->
-              io_lib:format("~s, ~w ~s ~w", [Weekday, D, Month, Y])
+              io_lib:format("~ts, ~w ~ts ~w", [Weekday, D, Month, Y])
       end).
 
 make_dir_rec(Dir) ->
@@ -504,7 +515,7 @@ create_image_files(Images_dir) ->
 	      case file:copy(Src, Dst) of
 		  {ok, _} -> ok;
 		  {error, Why} ->
-		      ?ERROR_MSG("Failed to copy ~s to ~s: ~s",
+		      ?ERROR_MSG("Failed to copy ~ts to ~ts: ~ts",
 				 [Src, Dst, file:format_error(Why)])
 	      end
       end, Filenames).
@@ -516,7 +527,7 @@ fw(F, S, FileFormat) when is_atom(FileFormat) ->
     fw(F, S, [], FileFormat).
 
 fw(F, S, O, FileFormat) ->
-    S1 = (str:format(binary_to_list(S) ++ "~n", O)),
+    S1 = <<(str:format(S, O))/binary, "\n">>,
     S2 = case FileFormat of
 	     html ->
 		 S1;
@@ -537,13 +548,13 @@ put_header(F, Room, Date, CSSFile, Lang, Hour_offset,
 	 "org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">">>),
     fw(F,
        <<"<html xmlns=\"http://www.w3.org/1999/xhtml\" "
-	 "xml:lang=\"~s\" lang=\"~s\">">>,
+	 "xml:lang=\"~ts\" lang=\"~ts\">">>,
        [Lang, Lang]),
     fw(F, <<"<head>">>),
     fw(F,
        <<"<meta http-equiv=\"Content-Type\" content=\"t"
 	 "ext/html; charset=utf-8\" />">>),
-    fw(F, <<"<title>~s - ~s</title>">>,
+    fw(F, <<"<title>~ts - ~ts</title>">>,
        [htmlize(Room#room.title), Date]),
     put_header_css(F, CSSFile),
     put_header_script(F),
@@ -554,19 +565,19 @@ put_header(F, Room, Date, CSSFile, Lang, Hour_offset,
        <<"<div style=\"text-align: right;\"><a "
 	 "style=\"color: #AAAAAA; font-family: "
 	 "monospace; text-decoration: none; font-weight"
-	 ": bold;\" href=\"~s\">~s</a></div>">>,
+	 ": bold;\" href=\"~ts\">~ts</a></div>">>,
        [Top_url, Top_text]),
-    fw(F, <<"<div class=\"roomtitle\">~s</div>">>,
+    fw(F, <<"<div class=\"roomtitle\">~ts</div>">>,
        [htmlize(Room#room.title)]),
     fw(F,
-       <<"<a class=\"roomjid\" href=\"xmpp:~s?join\">~s"
+       <<"<a class=\"roomjid\" href=\"xmpp:~ts?join\">~ts"
 	 "</a>">>,
        [Room#room.jid, Room#room.jid]),
     fw(F,
-       <<"<div class=\"logdate\">~s<span class=\"w3c\">"
-	 "<a class=\"nav\" href=\"~s\">&lt;</a> "
+       <<"<div class=\"logdate\">~ts<span class=\"w3c\">"
+	 "<a class=\"nav\" href=\"~ts\">&lt;</a> "
 	 "<a class=\"nav\" href=\"./\">^</a> <a "
-	 "class=\"nav\" href=\"~s\">&gt;</a></span></di"
+	 "class=\"nav\" href=\"~ts\">&gt;</a></span></di"
 	 "v>">>,
        [Date, Date_prev, Date_next]),
     case {htmlize(Room#room.subject_author),
@@ -574,7 +585,7 @@ put_header(F, Room, Date, CSSFile, Lang, Hour_offset,
 	of
       {<<"">>, <<"">>} -> ok;
       {SuA, Su} ->
-	  fw(F, <<"<div class=\"roomsubject\">~s~s~s</div>">>,
+	  fw(F, <<"<div class=\"roomsubject\">~ts~ts~ts</div>">>,
 	     [SuA, tr(Lang, ?T(" has set the subject to: ")), Su])
     end,
     RoomConfig = roomconfig_to_string(Room#room.config,
@@ -588,7 +599,7 @@ put_header(F, Room, Date, CSSFile, Lang, Hour_offset,
 			true -> io_lib:format("~p", [Hour_offset]);
 			false -> io_lib:format("+~p", [Hour_offset])
 		      end,
-    fw(F, <<"<br/><a class=\"ts\">GMT~s</a><br/>">>,
+    fw(F, <<"<br/><a class=\"ts\">GMT~ts</a><br/>">>,
        [Time_offset_str]).
 
 put_header_css(F, {file, Path}) ->
@@ -603,7 +614,7 @@ put_header_css(F, {file, Path}) ->
 put_header_css(F, {url, URL}) ->
     fw(F,
        <<"<link rel=\"stylesheet\" type=\"text/css\" "
-	 "href=\"~s\" media=\"all\">">>,
+	 "href=\"~ts\" media=\"all\">">>,
        [URL]).
 
 put_header_script(F) ->
@@ -621,11 +632,11 @@ put_room_config(F, RoomConfig, Lang, _FileFormat) ->
     fw(F, <<"<div class=\"rc\">">>),
     fw(F,
        <<"<div class=\"rct\" onclick=\"sh('a~p');return "
-	 "false;\">~s</div>">>,
+	 "false;\">~ts</div>">>,
        [Now2, tr(Lang, ?T("Room Configuration"))]),
     fw(F,
        <<"<div class=\"rcos\" id=\"a~p\" style=\"displa"
-	 "y: none;\" ><br/>~s</div>">>,
+	 "y: none;\" ><br/>~ts</div>">>,
        [Now2, RoomConfig]),
     fw(F, <<"</div>">>).
 
@@ -641,11 +652,11 @@ put_room_occupants(F, RoomOccupants, Lang,
     fw(F, <<"<div class=\"rc\">">>),
     fw(F,
        <<"<div class=\"rct\" onclick=\"sh('o~p');return "
-	 "false;\">~s</div>">>,
+	 "false;\">~ts</div>">>,
        [Now2, tr(Lang, ?T("Room Occupants"))]),
     fw(F,
        <<"<div class=\"rcos\" id=\"o~p\" style=\"displa"
-	 "y: none;\" ><br/>~s</div>">>,
+	 "y: none;\" ><br/>~ts</div>">>,
        [Now2, RoomOccupants]),
     fw(F, <<"</div>">>).
 
@@ -953,6 +964,8 @@ mod_opt_type(spam_prevention) ->
     econf:bool();
 mod_opt_type(timezone) ->
     econf:enum([local, universal]);
+mod_opt_type(url) ->
+    econf:url();
 mod_opt_type(top_link) ->
     econf:and_then(
       econf:non_empty(
@@ -965,7 +978,7 @@ mod_opt_type(top_link) ->
 				{atom(), any()}].
 mod_options(_) ->
     [{access_log, muc_admin},
-     {cssfile, filename:join(misc:css_dir(), <<"muc.css">>)},
+     {cssfile, {file, filename:join(misc:css_dir(), <<"muc.css">>)}},
      {dirname, room_jid},
      {dirtype, subdirs},
      {file_format, html},
@@ -973,4 +986,126 @@ mod_options(_) ->
      {outdir, <<"www/muc">>},
      {spam_prevention, true},
      {timezone, local},
+     {url, undefined},
      {top_link, {<<"/">>, <<"Home">>}}].
+
+mod_doc() ->
+    #{desc =>
+          [?T("This module enables optional logging "
+              "of Multi-User Chat (MUC) public "
+              "conversations to HTML. Once you enable "
+              "this module, users can join a room using a "
+              "MUC capable XMPP client, and if they have "
+              "enough privileges, they can request the "
+              "configuration form in which they can set "
+              "the option to enable room logging."), "",
+           ?T("Features:"), "",
+           ?T("- Room details are added on top of each page: "
+              "room title, JID, author, subject and configuration."), "",
+           ?T("- The room JID in the generated HTML is a link "
+              "to join the room (using XMPP URI)."), "",
+           ?T("- Subject and room configuration changes are tracked "
+              "and displayed."), "",
+           ?T("- Joins, leaves, nick changes, kicks, bans and '/me' "
+              "are tracked and displayed, including the reason if available."), "",
+           ?T("- Generated HTML files are XHTML 1.0 Transitional and "
+              "CSS compliant."), "",
+           ?T("- Timestamps are self-referencing links."), "",
+           ?T("- Links on top for quicker navigation: "
+              "Previous day, Next day, Up."), "",
+           ?T("- CSS is used for style definition, and a custom "
+              "CSS file can be used."), "",
+           ?T("- URLs on messages and subjects are converted to hyperlinks."), "",
+           ?T("- Timezone used on timestamps is shown on the log files."), "",
+           ?T("- A custom link can be added on top of each page."), "",
+           ?T("The module depends on 'mod_muc'.")],
+      opts =>
+          [{access_log,
+            #{value => ?T("AccessName"),
+              desc =>
+                  ?T("This option restricts which occupants are "
+                     "allowed to enable or disable room logging. "
+                     "The default value is 'muc_admin'. NOTE: "
+                     "for this default setting you need to have an "
+                     "access rule for 'muc_admin' in order to take effect.")}},
+           {cssfile,
+            #{value => ?T("Path | URL"),
+              desc =>
+                  ?T("With this option you can set whether the HTML "
+                     "files should have a custom CSS file or if they "
+                     "need to use the embedded CSS. Allowed values "
+                     "are either 'Path' to local file or an 'URL' to "
+                     "a remote file. By default a predefined CSS will "
+                     "be embedded into the HTML page.")}},
+           {dirname,
+            #{value => "room_jid | room_name",
+              desc =>
+                  ?T("Allows to configure the name of the room directory. "
+                     "If set to 'room_jid', the room directory name will "
+                     "be the full room JID. Otherwise, the room directory "
+                     "name will be only the room name, not including the "
+                     "MUC service name. The default value is 'room_jid'.")}},
+           {dirtype,
+            #{value => "subdirs | plain",
+              desc =>
+                  ?T("The type of the created directories can be specified "
+                     "with this option. If set to 'subdirs', subdirectories "
+                     "are created for each year and month. Otherwise, the "
+                     "names of the log files contain the full date, and "
+                     "there are no subdirectories. The default value is 'subdirs'.")}},
+           {file_format,
+            #{value => "html | plaintext",
+              desc =>
+                  ?T("Define the format of the log files: 'html' stores "
+                     "in HTML format, 'plaintext' stores in plain text. "
+                     "The default value is 'html'.")}},
+           {file_permissions,
+            #{value => "{mode: Mode, group: Group}",
+              desc =>
+                  ?T("Define the permissions that must be used when "
+                     "creating the log files: the number of the mode, "
+                     "and the numeric id of the group that will own the "
+                     "files. The default value is shown in the example below:"),
+              example =>
+                  ["file_permissions:",
+                   "  mode: 644",
+                   "  group: 33"]}},
+           {outdir,
+            #{value => ?T("Path"),
+              desc =>
+                  ?T("This option sets the full path to the directory "
+                     "in which the HTML files should be stored. "
+                     "Make sure the ejabberd daemon user has write "
+                     "access on that directory. The default value is 'www/muc'.")}},
+           {spam_prevention,
+            #{value => "true | false",
+              desc =>
+                  ?T("If set to 'true', a special attribute is added to links "
+                     "that prevent their indexation by search engines. "
+                     "The default value is 'true', which mean that 'nofollow' "
+                     "attributes will be added to user submitted links.")}},
+           {timezone,
+            #{value => "local | universal",
+              desc =>
+                  ?T("The time zone for the logs is configurable with "
+                     "this option. If set to 'local', the local time, as "
+                     "reported to Erlang emulator by the operating system, "
+                     "will be used. Otherwise, UTC time will be used. "
+                     "The default value is 'local'.")}},
+           {url,
+            #{value => ?T("URL"),
+              desc =>
+                  ?T("A top level 'URL' where a client can access "
+                     "logs of a particular conference. The conference name "
+                     "is appended to the URL if 'dirname' option is set to "
+                     "'room_name' or a conference JID is appended to the 'URL' "
+                     "otherwise. There is no default value.")}},
+           {top_link,
+            #{value => "{URL: Text}",
+              desc =>
+                  ?T("With this option you can customize the link on "
+                     "the top right corner of each log file. "
+                     "The default value is shown in the example below:"),
+              example =>
+                  ["top_link:",
+                   "  /: Home"]}}]}.

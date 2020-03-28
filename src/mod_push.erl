@@ -5,7 +5,7 @@
 %%% Created : 15 Jul 2017 by Holger Weiss <holger@zedat.fu-berlin.de>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2017-2019 ProcessOne
+%%% ejabberd, Copyright (C) 2017-2020 ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -31,7 +31,7 @@
 
 %% gen_mod callbacks.
 -export([start/2, stop/1, reload/3, mod_opt_type/1, mod_options/1, depends/2]).
-
+-export([mod_doc/0]).
 %% ejabberd_hooks callbacks.
 -export([disco_sm_features/5, c2s_session_pending/1, c2s_copy_session/2,
 	 c2s_handle_cast/2, c2s_stanza/3, mam_message/7, offline_message/1,
@@ -153,6 +153,60 @@ mod_options(Host) ->
      {cache_missed, ejabberd_option:cache_missed(Host)},
      {cache_life_time, ejabberd_option:cache_life_time(Host)}].
 
+mod_doc() ->
+    #{desc =>
+          ?T("This module implements the XMPP server's part of "
+             "the push notification solution specified in "
+             "https://xmpp.org/extensions/xep-0357.html"
+             "[XEP-0357: Push Notifications]. It does not generate, "
+             "for example, APNS or FCM notifications directly. "
+             "Instead, it's designed to work with so-called "
+             "\"app servers\" operated by third-party vendors of "
+             "mobile apps. Those app servers will usually trigger "
+             "notification delivery to the user's mobile device using "
+             "platform-dependant backend services such as FCM or APNS."),
+      opts =>
+          [{include_sender,
+            #{value => "true | false",
+              desc =>
+                  ?T("If this option is set to 'true', the sender's JID "
+                     "is included with push notifications generated for "
+                     "incoming messages with a body. "
+                     "The default value is 'false'.")}},
+           {include_body,
+            #{value => "true | false | Text",
+              desc =>
+                  ?T("If this option is set to 'true', the message text "
+                     "is included with push notifications generated for "
+                     "incoming messages with a body. The option can instead "
+                     "be set to a static 'Text', in which case the specified "
+                     "text will be included in place of the actual message "
+                     "body. This can be useful to signal the app server "
+                     "whether the notification was triggered by a message "
+                     "with body (as opposed to other types of traffic) "
+                     "without leaking actual message contents. "
+                     "The default value is \"New message\".")}},
+           {db_type,
+            #{value => "mnesia | sql",
+              desc =>
+                  ?T("Same as top-level 'default_db' option, but applied to this module only.")}},
+           {use_cache,
+            #{value => "true | false",
+              desc =>
+                  ?T("Same as top-level 'use_cache' option, but applied to this module only.")}},
+           {cache_size,
+            #{value => "pos_integer() | infinity",
+              desc =>
+                  ?T("Same as top-level 'cache_size' option, but applied to this module only.")}},
+           {cache_missed,
+            #{value => "true | false",
+              desc =>
+                  ?T("Same as top-level 'cache_missed' option, but applied to this module only.")}},
+           {cache_life_time,
+            #{value => "timeout()",
+              desc =>
+                  ?T("Same as top-level 'cache_life_time' option, but applied to this module only.")}}]}.
+
 %%--------------------------------------------------------------------
 %% ejabberd command callback.
 %%--------------------------------------------------------------------
@@ -217,8 +271,8 @@ register_hooks(Host) ->
 		       c2s_stanza, 50),
     ejabberd_hooks:add(store_mam_message, Host, ?MODULE,
 		       mam_message, 50),
-    ejabberd_hooks:add(store_offline_message, Host, ?MODULE,
-		       offline_message, 50),
+    ejabberd_hooks:add(offline_message_hook, Host, ?MODULE,
+		       offline_message, 55),
     ejabberd_hooks:add(remove_user, Host, ?MODULE,
 		       remove_user, 50).
 
@@ -236,8 +290,8 @@ unregister_hooks(Host) ->
 			  c2s_stanza, 50),
     ejabberd_hooks:delete(store_mam_message, Host, ?MODULE,
 			  mam_message, 50),
-    ejabberd_hooks:delete(store_offline_message, Host, ?MODULE,
-			  offline_message, 50),
+    ejabberd_hooks:delete(offline_message_hook, Host, ?MODULE,
+			  offline_message, 55),
     ejabberd_hooks:delete(remove_user, Host, ?MODULE,
 			  remove_user, 50).
 
@@ -316,16 +370,16 @@ enable(#jid{luser = LUser, lserver = LServer, lresource = LResource} = JID,
 	{TS, PID} ->
 	    case store_session(LUser, LServer, TS, PushJID, Node, XData) of
 		{ok, _} ->
-		    ?INFO_MSG("Enabling push notifications for ~s",
+		    ?INFO_MSG("Enabling push notifications for ~ts",
 			      [jid:encode(JID)]),
 		    ejabberd_c2s:cast(PID, push_enable);
 		{error, _} = Err ->
-		    ?ERROR_MSG("Cannot enable push for ~s: database error",
+		    ?ERROR_MSG("Cannot enable push for ~ts: database error",
 			       [jid:encode(JID)]),
 		    Err
 	    end;
 	none ->
-	    ?WARNING_MSG("Cannot enable push for ~s: session not found",
+	    ?WARNING_MSG("Cannot enable push for ~ts: session not found",
 			 [jid:encode(JID)]),
 	    {error, notfound}
     end.
@@ -335,11 +389,11 @@ disable(#jid{luser = LUser, lserver = LServer, lresource = LResource} = JID,
        PushJID, Node) ->
     case ejabberd_sm:get_session_sid(LUser, LServer, LResource) of
 	{_TS, PID} ->
-	    ?INFO_MSG("Disabling push notifications for ~s",
+	    ?INFO_MSG("Disabling push notifications for ~ts",
 		      [jid:encode(JID)]),
 	    ejabberd_c2s:cast(PID, push_disable);
 	none ->
-	    ?WARNING_MSG("Session not found while disabling push for ~s",
+	    ?WARNING_MSG("Session not found while disabling push for ~ts",
 			 [jid:encode(JID)])
     end,
     if Node /= <<>> ->
@@ -364,39 +418,32 @@ c2s_stanza(State, _Pkt, _SendResult) ->
 
 -spec mam_message(message() | drop, binary(), binary(), jid(),
 		  binary(), chat | groupchat, recv | send) -> message().
-%%mam_message(#message{} = Pkt, LUser, LServer, _Peer, _Nick, chat, Dir) ->
-%%    case lookup_sessions(LUser, LServer) of
-%%	{ok, [_|_] = Clients} ->
-%%	    case drop_online_sessions(LUser, LServer, Clients) of
-%%		[_|_] = Clients1 ->
-%%		    ?DEBUG("Notifying ~s@~s of MAM message", [LUser, LServer]),
-%%		    notify(LUser, LServer, Clients1, Pkt, Dir);
-%%		[] ->
-%%		    ok
-%%	    end;
-%%	_ ->
-%%	    ok
-%%    end,
-%%    Pkt;
 mam_message(Pkt, _LUser, _LServer, _Peer, _Nick, _Type, _Dir) ->
     Pkt.
 
--spec offline_message(message()) -> message().
-offline_message(#message{to = #jid{luser = LUser, lserver = LServer}} = Pkt) ->
-	case misc:unwrap_mucsub_message(Pkt) of
-	#message{} = Msg ->
-	    ?DEBUG("Unwrapping mucsub for offline message", []),
-		offline_message(Msg);
-	_ ->
-	    case lookup_sessions(LUser, LServer) of
-		{ok, [_|_] = Clients} ->
-		    ?DEBUG("Notifying ~s@~s of offline message", [LUser, LServer]),
-		    notify(LUser, LServer, Clients, Pkt, recv);
-		_ ->
-		    ok
-	    end
-	end,
-    Pkt.
+-spec offline_message({any(), message()}) -> {any(), message()}.
+% Commented out by BC
+%offline_message({offlined, #message{meta = #{mam_archived := true}}} = Acc) ->
+%    Acc; % Push notification was triggered via MAM.
+offline_message({offlined,
+		 #message{to = #jid{luser = LUser,
+				    lserver = LServer}} = Pkt} = Acc) ->
+  case misc:unwrap_mucsub_message(Pkt) of
+  #message{} = Msg ->
+      ?DEBUG("Unwrapping mucsub for offline message", []),
+    offline_message({offlined, Msg});
+  _ ->
+      case lookup_sessions(LUser, LServer) of
+	 {ok, [_|_] = Clients} ->
+	    ?DEBUG("Notifying ~ts@~ts of offline message", [LUser, LServer]),
+	    notify(LUser, LServer, Clients, Pkt, recv);
+    _ ->
+        ok
+      end
+  end,
+    Acc;
+offline_message(Acc) ->
+    Acc.
 
 -spec c2s_session_pending(c2s_state()) -> c2s_state().
 c2s_session_pending(#{push_enabled := true, mgmt_queue := Queue} = State) ->
@@ -432,7 +479,7 @@ c2s_handle_cast(State, _Msg) ->
 
 -spec remove_user(binary(), binary()) -> ok | {error, err_reason()}.
 remove_user(LUser, LServer) ->
-    ?INFO_MSG("Removing any push sessions of ~s@~s", [LUser, LServer]),
+    ?INFO_MSG("Removing any push sessions of ~ts@~ts", [LUser, LServer]),
     Mod = gen_mod:db_mod(LServer, ?MODULE),
     LookupFun = fun() -> Mod:lookup_sessions(LUser, LServer) end,
     delete_sessions(LUser, LServer, LookupFun, Mod).
@@ -458,13 +505,13 @@ notify(LUser, LServer, Clients, Pkt, Dir) ->
       fun({TS, PushLJID, Node, XData}) ->
 	      HandleResponse =
 	          fun(#iq{type = result}) ->
-			  ?DEBUG("~s accepted notification for ~s@~s (~s)",
+			  ?DEBUG("~ts accepted notification for ~ts@~ts (~ts)",
 				 [jid:encode(PushLJID), LUser, LServer, Node]);
 		     (#iq{type = error} = IQ) ->
 			  case inspect_error(IQ) of
 			      {wait, Reason} ->
-				  ?INFO_MSG("~s rejected notification for "
-					    "~s@~s (~s) temporarily: ~s",
+				  ?INFO_MSG("~ts rejected notification for "
+					    "~ts@~ts (~ts) temporarily: ~ts",
 					    [jid:encode(PushLJID), LUser,
 					     LServer, Node, Reason]);
 			      {Type, Reason} ->
@@ -472,15 +519,15 @@ notify(LUser, LServer, Clients, Pkt, Dir) ->
 		  	   % do not delete session on unsuccessfull notification as for now
 				%  spawn(?MODULE, delete_session,
 				%	[LUser, LServer, TS]),
-					?WARNING_MSG("~s rejected notification for "
-					       "~s@~s (~s), but not disabling push: ~s "
-					       "(~s)",
+					?WARNING_MSG("~ts rejected notification for "
+					       "~ts@~ts (~ts), but not disabling push: ~ts "
+					       "(~ts)",
 					       [jid:encode(PushLJID), LUser,
 						LServer, Node, Reason, Type])
 			  end;
 		     (timeout) ->
-			  ?DEBUG("Timeout sending notification for ~s@~s (~s) "
-				 "to ~s",
+			  ?DEBUG("Timeout sending notification for ~ts@~ts (~ts) "
+				 "to ~ts",
 				 [LUser, LServer, Node, jid:encode(PushLJID)]),
 			  ok % Hmm.
 		  end,

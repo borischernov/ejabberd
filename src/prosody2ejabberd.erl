@@ -4,7 +4,7 @@
 %%% Created : 20 Jan 2016 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -55,7 +55,7 @@ from_dir(ProsodyDir) ->
 				      "privacy", "pep", "pubsub"])
 		      end, HostDirs);
 		{error, Why} = Err ->
-		    ?ERROR_MSG("Failed to list ~s: ~s",
+		    ?ERROR_MSG("Failed to list ~ts: ~ts",
 			       [ProsodyDir, file:format_error(Why)]),
 		    Err
 	    end;
@@ -97,7 +97,7 @@ convert_dir(Path, Host, Type) ->
 	{error, enoent} ->
 	    ok;
 	{error, Why} = Err ->
-	    ?ERROR_MSG("Failed to list ~s: ~s",
+	    ?ERROR_MSG("Failed to list ~ts: ~ts",
 		       [Path, file:format_error(Why)]),
 	    Err
     end.
@@ -119,11 +119,11 @@ eval_file(Path) ->
 		{ok, _} = Res ->
 		    Res;
 		{error, Why} = Err ->
-		    ?ERROR_MSG("Failed to eval ~s: ~p", [Path, Why]),
+		    ?ERROR_MSG("Failed to eval ~ts: ~p", [Path, Why]),
 		    Err
 	    end;
 	{error, Why} = Err ->
-	    ?ERROR_MSG("Failed to read file ~s: ~s",
+	    ?ERROR_MSG("Failed to read file ~ts: ~ts",
 		       [Path, file:format_error(Why)]),
 	    Err
     end.
@@ -151,7 +151,7 @@ convert_data(Host, "accounts", User, [Data]) ->
 	ok ->
 	    ok;
 	Err ->
-	    ?ERROR_MSG("Failed to register user ~s@~s: ~p",
+	    ?ERROR_MSG("Failed to register user ~ts@~ts: ~p",
 		       [User, Host, Err]),
 	    Err
     end;
@@ -272,7 +272,7 @@ convert_data(HostStr, "pubsub", Node, [Data]) ->
 			    Error
 		    end;
 		Error ->
-		    ?ERROR_MSG("Failed to import pubsub node ~s on ~p:~n~p",
+		    ?ERROR_MSG("Failed to import pubsub node ~ts on ~p:~n~p",
 			       [Node, Host, NodeData]),
 		    Error
 	    end;

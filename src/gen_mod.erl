@@ -5,7 +5,7 @@
 %%% Created : 24 Jan 2003 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -53,12 +53,18 @@
 
 -type opts() :: #{atom() => term()}.
 -type db_type() :: atom().
+-type opt_desc() :: #{desc => binary() | [binary()],
+                      value => string() | binary()}.
+-type opt_doc() :: {atom(), opt_desc()} | {atom(), opt_desc(), [opt_doc()]}.
 
 -callback start(binary(), opts()) -> ok | {ok, pid()} | {error, term()}.
 -callback stop(binary()) -> any().
 -callback reload(binary(), opts(), opts()) -> ok | {ok, pid()} | {error, term()}.
 -callback mod_opt_type(atom()) -> econf:validator().
 -callback mod_options(binary()) -> [{atom(), term()} | atom()].
+-callback mod_doc() -> #{desc => binary() | [binary()],
+                         opts => [opt_doc()],
+                         example => [string()] | [{binary(), [string()]}]}.
 -callback depends(binary(), opts()) -> [{module(), hard | soft}].
 
 -optional_callbacks([mod_opt_type/1, reload/3]).
@@ -121,7 +127,7 @@ stop_child(Proc) ->
 -spec start_modules() -> any().
 start_modules() ->
     Hosts = ejabberd_option:hosts(),
-    ?INFO_MSG("Loading modules for ~s", [format_hosts_list(Hosts)]),
+    ?INFO_MSG("Loading modules for ~ts", [misc:format_hosts_list(Hosts)]),
     lists:foreach(fun start_modules/1, Hosts).
 
 -spec start_modules(binary()) -> ok.
@@ -144,7 +150,7 @@ start_module(Host, Module) ->
 
 -spec start_module(binary(), atom(), opts(), integer()) -> ok | {ok, pid()}.
 start_module(Host, Module, Opts, Order) ->
-    ?DEBUG("Loading ~s at ~s", [Module, Host]),
+    ?DEBUG("Loading ~ts at ~ts", [Module, Host]),
     store_options(Host, Module, Opts, Order),
     try case Module:start(Host, Opts) of
 	    ok -> ok;
@@ -205,7 +211,7 @@ reload_modules(Host) ->
 reload_module(Host, Module, NewOpts, OldOpts, Order) ->
     case erlang:function_exported(Module, reload, 3) of
 	true ->
-	    ?DEBUG("Reloading ~s at ~s", [Module, Host]),
+	    ?DEBUG("Reloading ~ts at ~ts", [Module, Host]),
 	    store_options(Host, Module, NewOpts, Order),
 	    try case Module:reload(Host, NewOpts, OldOpts) of
 		    ok -> ok;
@@ -222,7 +228,7 @@ reload_module(Host, Module, NewOpts, OldOpts, Order) ->
 		    erlang:raise(Class, Reason, StackTrace)
 	    end;
 	false ->
-	    ?WARNING_MSG("Module ~s doesn't support reloading "
+	    ?WARNING_MSG("Module ~ts doesn't support reloading "
 			 "and will be restarted", [Module]),
 	    stop_module(Host, Module),
 	    start_module(Host, Module, NewOpts, Order)
@@ -284,14 +290,14 @@ stop_module(Host, Module) ->
 
 -spec stop_module_keep_config(binary(), atom()) -> error | ok.
 stop_module_keep_config(Host, Module) ->
-    ?DEBUG("Stopping ~s at ~s", [Module, Host]),
+    ?DEBUG("Stopping ~ts at ~ts", [Module, Host]),
     try Module:stop(Host) of
 	_ ->
 	    ets:delete(ejabberd_modules, {Module, Host}),
 	    ok
     catch ?EX_RULE(Class, Reason, St) ->
             StackTrace = ?EX_STACK(St),
-            ?ERROR_MSG("Failed to stop module ~s at ~s:~n** ~s",
+            ?ERROR_MSG("Failed to stop module ~ts at ~ts:~n** ~ts",
                        [Module, Host,
                         misc:format_exception(2, Class, Reason, StackTrace)]),
 	    error
@@ -429,41 +435,22 @@ is_equal_opt(Opt, NewOpts, OldOpts) ->
 format_module_error(Module, Fun, Arity, Opts, Class, Reason, St) ->
     case {Class, Reason} of
 	{error, {bad_return, Module, {error, _} = Err}} ->
-	    io_lib:format("Failed to ~s module ~s: ~s",
+	    io_lib:format("Failed to ~ts module ~ts: ~ts",
 			  [Fun, Module, misc:format_val(Err)]);
 	{error, {bad_return, Module, Ret}} ->
-	    io_lib:format("Module ~s returned unexpected value from ~s/~B:~n"
+	    io_lib:format("Module ~ts returned unexpected value from ~ts/~B:~n"
                           "** Error: ~p~n"
                           "** Hint: this is either not an ejabberd module "
 			  "or it implements ejabberd API incorrectly",
 			  [Module, Fun, Arity, Ret]);
 	_ ->
-	    io_lib:format("Internal error of module ~s has "
-			  "occurred during ~s:~n"
+	    io_lib:format("Internal error of module ~ts has "
+			  "occurred during ~ts:~n"
 			  "** Options: ~p~n"
-			  "** ~s",
+			  "** ~ts",
 			  [Module, Fun, Opts,
 			   misc:format_exception(2, Class, Reason, St)])
     end.
-
--spec format_hosts_list([binary()]) -> iolist().
-format_hosts_list([Host]) ->
-    Host;
-format_hosts_list([H1, H2]) ->
-    [H1, " and ", H2];
-format_hosts_list([H1, H2, H3]) ->
-    [H1, ", ", H2, " and ", H3];
-format_hosts_list([H1, H2|Hs]) ->
-    io_lib:format("~s, ~s and ~B more hosts",
-		  [H1, H2, length(Hs)]).
-
--spec format_cycle([atom()]) -> iolist().
-format_cycle([M1]) ->
-    atom_to_list(M1);
-format_cycle([M1, M2]) ->
-    [atom_to_list(M1), " and ", atom_to_list(M2)];
-format_cycle([M|Ms]) ->
-    atom_to_list(M) ++ ", " ++ format_cycle(Ms).
 
 %%%===================================================================
 %%% Validation
@@ -592,14 +579,14 @@ sort_modules(Host, ModOpts) ->
 
 -spec warn_soft_dep_fail(module(), module()) -> ok.
 warn_soft_dep_fail(DepMod, Mod) ->
-    ?WARNING_MSG("Module ~s is recommended for module "
-		 "~s but is not found in the config",
+    ?WARNING_MSG("Module ~ts is recommended for module "
+		 "~ts but is not found in the config",
 		 [DepMod, Mod]).
 
 -spec warn_cyclic_dep([module()]) -> ok.
 warn_cyclic_dep(Path) ->
-    ?WARNING_MSG("Cyclic dependency detected between modules ~s. "
+    ?WARNING_MSG("Cyclic dependency detected between modules ~ts. "
 		 "This is either a bug, or the modules are not "
 		 "supposed to work together in this configuration. "
 		 "The modules will still be loaded though",
-		 [format_cycle(Path)]).
+		 [misc:format_cycle(Path)]).

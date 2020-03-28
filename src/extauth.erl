@@ -2,7 +2,7 @@
 %%% Created : 7 May 2018 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -129,7 +129,7 @@ handle_call({cmd, Cmd, EndTime}, _From, State) ->
 		    {reply, decode_bool(N), State};
 		{Port, Data} ->
 		    ?ERROR_MSG("Received unexpected response from external "
-			       "authentication program '~s': ~p "
+			       "authentication program '~ts': ~p "
 			       "(port = ~p, pid = ~w)",
 			       [State#state.prog, Data, Port, State#state.os_pid]),
 		    {reply, {error, unexpected_response}, State};
@@ -149,11 +149,11 @@ handle_info({'EXIT', Port, _Reason}, #state{port = Port,
 					    start_time = Time} = State) ->
     case curr_time() - Time of
 	Diff when Diff < 1000 ->
-	    ?ERROR_MSG("Failed to start external authentication program '~s'",
+	    ?ERROR_MSG("Failed to start external authentication program '~ts'",
 		       [State#state.prog]),
 	    {stop, normal, State};
 	_ ->
-	    ?ERROR_MSG("External authentication program '~s' has terminated "
+	    ?ERROR_MSG("External authentication program '~ts' has terminated "
 		       "unexpectedly (pid=~w), restarting via supervisor...",
 		       [State#state.prog, State#state.os_pid]),
 	    {stop, normal, State}

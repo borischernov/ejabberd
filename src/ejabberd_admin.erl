@@ -5,7 +5,7 @@
 %%% Created :  7 May 2006 by Mickael Remond <mremond@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -58,6 +58,7 @@
 	 mnesia_change_nodename/4,
 	 restore/1, % Still used by some modules
 	 clear_cache/0,
+	 gc/0,
 	 get_commands_spec/0
 	]).
 %% gen_server callbacks
@@ -142,20 +143,16 @@ get_commands_spec() ->
 			desc = "Get the current loglevel",
 			module = ejabberd_logger, function = get,
 			result_desc = "Tuple with the log level number, its keyword and description",
-			result_example = {4, info, <<"Info">>},
+			result_example = warning,
 			args = [],
-                        result = {leveltuple, {tuple, [{levelnumber, integer},
-                                                       {levelatom, atom},
-                                                       {leveldesc, string}
-                                                      ]}}},
+                        result = {levelatom, atom}},
      #ejabberd_commands{name = set_loglevel, tags = [logs, server],
-			desc = "Set the loglevel (0 to 5)",
+			desc = "Set the loglevel",
 			module = ?MODULE, function = set_loglevel,
-			args_desc = ["Integer of the desired logging level, between 1 and 5"],
-			args_example = [5],
-			result_desc = "The type of logger module used",
-			result_example = lager,
-			args = [{loglevel, integer}],
+			args_desc = ["Desired logging level: none | emergency | alert | critical "
+				     "| error | warning | notice | info | debug"],
+			args_example = [debug],
+			args = [{loglevel, string}],
 			result = {res, rescode}},
 
      #ejabberd_commands{name = update_list, tags = [server],
@@ -272,12 +269,11 @@ get_commands_spec() ->
 			args_example = ["example.com"],
                         args = [{host, string}], result = {res, rescode}},
      #ejabberd_commands{name = convert_to_scram, tags = [sql],
-			desc = "Convert the passwords in 'users' ODBC table to SCRAM",
-			module = ejabberd_auth_sql, function = convert_to_scram,
+			desc = "Convert the passwords of users to SCRAM",
+			module = ejabberd_auth, function = convert_to_scram,
 			args_desc = ["Vhost which users' passwords will be scrammed"],
 			args_example = ["example.com"],
 			args = [{host, binary}], result = {res, rescode}},
-
      #ejabberd_commands{name = import_prosody, tags = [mnesia, sql],
 			desc = "Import data from Prosody",
 			longdesc = "Note: this method requires ejabberd compiled with optional tools support "
@@ -388,7 +384,15 @@ get_commands_spec() ->
      #ejabberd_commands{name = clear_cache, tags = [server],
 			desc = "Clear database cache on all nodes",
 			module = ?MODULE, function = clear_cache,
-			args = [], result = {res, rescode}}
+			args = [], result = {res, rescode}},
+     #ejabberd_commands{name = gc, tags = [server],
+			desc = "Force full garbage collection",
+			module = ?MODULE, function = gc,
+			args = [], result = {res, rescode}},
+     #ejabberd_commands{name = man, tags = [documentation],
+                        desc = "Generate Unix manpage for current ejabberd version",
+                        module = ejabberd_doc, function = man,
+                        args = [], result = {res, restuple}}
     ].
 
 
@@ -410,15 +414,23 @@ status() ->
     {Is_running, String1 ++ String2}.
 
 reopen_log() ->
-    ejabberd_hooks:run(reopen_log_hook, []),
-    ejabberd_logger:reopen_log().
+    ejabberd_hooks:run(reopen_log_hook, []).
 
 rotate_log() ->
-    ejabberd_hooks:run(rotate_log_hook, []),
-    ejabberd_logger:rotate_log().
+    ejabberd_hooks:run(rotate_log_hook, []).
 
 set_loglevel(LogLevel) ->
-    ejabberd_logger:set(LogLevel).
+    try binary_to_existing_atom(iolist_to_binary(LogLevel), latin1) of
+	Level ->
+	    case lists:member(Level, ejabberd_logger:loglevels()) of
+		true ->
+		    ejabberd_logger:set(Level);
+		false ->
+		    {error, "Invalid log level"}
+	    end
+    catch _:_ ->
+	    {error, "Invalid log level"}
+    end.
 
 %%%
 %%% Stop Kindly
@@ -449,7 +461,7 @@ stop_kindly(DelaySeconds, AnnouncementTextString) ->
 	      SecondsDiff =
 		  calendar:datetime_to_gregorian_seconds({date(), time()})
 		  - TimestampStart,
-	      io:format("[~p/~p ~ps] ~s... ",
+	      io:format("[~p/~p ~ps] ~ts... ",
 			[NumberThis, NumberLast, SecondsDiff, Desc]),
 	      Result = (catch apply(Mod, Func, Args)),
 	      io:format("~p~n", [Result]),
@@ -542,18 +554,18 @@ registered_vhosts() ->
 
 reload_config() ->
     case ejabberd_config:reload() of
-	ok -> {ok, ""};
+	ok -> ok;
 	Err ->
 	    Reason = ejabberd_config:format_error(Err),
-	    {invalid_config, Reason}
+	    {error, Reason}
     end.
 
 dump_config(Path) ->
     case ejabberd_config:dump(Path) of
-	ok -> {ok, ""};
+	ok -> ok;
 	Err ->
 	    Reason = ejabberd_config:format_error(Err),
-	    {invalid_file, Reason}
+	    {error, Reason}
     end.
 
 convert_to_yaml(In, Out) ->
@@ -561,7 +573,7 @@ convert_to_yaml(In, Out) ->
 	ok -> {ok, ""};
 	Err ->
 	    Reason = ejabberd_config:format_error(Err),
-	    {invalid_config, Reason}
+	    {error, Reason}
     end.
 
 %%%
@@ -829,6 +841,9 @@ mnesia_change_nodename(FromString, ToString, Source, Target) ->
 clear_cache() ->
     Nodes = ejabberd_cluster:get_nodes(),
     lists:foreach(fun(T) -> ets_cache:clear(T, Nodes) end, ets_cache:all()).
+
+gc() ->
+    lists:foreach(fun erlang:garbage_collect/1, processes()).
 
 -spec is_my_host(binary()) -> boolean().
 is_my_host(Host) ->

@@ -1,5 +1,5 @@
 --
--- ejabberd, Copyright (C) 2002-2019   ProcessOne
+-- ejabberd, Copyright (C) 2002-2020   ProcessOne
 --
 -- This program is free software; you can redistribute it and/or
 -- modify it under the terms of the GNU General Public License as
@@ -382,6 +382,13 @@ CREATE TABLE oauth_token (
     jid text NOT NULL,
     scope text NOT NULL,
     expire bigint NOT NULL
+) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+CREATE TABLE oauth_client (
+    client_id varchar(191) NOT NULL PRIMARY KEY,
+    client_name text NOT NULL,
+    grant_type text NOT NULL,
+    options text NOT NULL
 ) ENGINE=InnoDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 CREATE TABLE route (

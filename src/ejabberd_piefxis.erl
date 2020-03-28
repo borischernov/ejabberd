@@ -5,7 +5,7 @@
 %%% Created : 17 Jul 2008 by Pablo Polvorin <pablo.polvorin@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -86,7 +86,7 @@ import_file(FileName, State) ->
             Res;
 	{error, Reason} ->
             ErrTxt = file:format_error(Reason),
-            ?ERROR_MSG("Failed to open file '~s': ~s", [FileName, ErrTxt]),
+            ?ERROR_MSG("Failed to open file '~ts': ~ts", [FileName, ErrTxt]),
             {error, Reason}
     end.
 
@@ -125,7 +125,7 @@ export_hosts(Hosts, Dir) ->
               end, ok, FilesAndHosts);
         {error, Reason} ->
             ErrTxt = file:format_error(Reason),
-            ?ERROR_MSG("Failed to open file '~s': ~s", [DFn, ErrTxt]),
+            ?ERROR_MSG("Failed to open file '~ts': ~ts", [DFn, ErrTxt]),
             {error, Reason}
     end.
 
@@ -149,7 +149,7 @@ export_host(Dir, FnH, Host) ->
             end;
         {error, Reason} ->
             ErrTxt = file:format_error(Reason),
-            ?ERROR_MSG("Failed to open file '~s': ~s", [DFn, ErrTxt]),
+            ?ERROR_MSG("Failed to open file '~ts': ~ts", [DFn, ErrTxt]),
             {error, Reason}
     end.
 
@@ -193,9 +193,9 @@ parse_scram_password(PassData) ->
   Split = binary:split(PassData, <<",">>, [global]),
   [StoredKeyB64, ServerKeyB64, SaltB64, IterationCountBin] = Split,
   #scram{
-    storedkey = StoredKeyB64,
-    serverkey = ServerKeyB64,
-    salt      = SaltB64,
+    storedkey = base64:decode(StoredKeyB64),
+    serverkey = base64:decode(ServerKeyB64),
+    salt      = base64:decode(SaltB64),
     iterationcount = (binary_to_integer(IterationCountBin))
   }.
 
@@ -296,17 +296,26 @@ process(#state{xml_stream_state = XMLStreamState, fd = Fd} = State) ->
     end.
 
 process_els(State) ->
+    Els = gather_els(State, []),
+    process_els(State, lists:reverse(Els)).
+
+gather_els(State, List) ->
     receive
         {'$gen_event', El} ->
-            case process_el(El, State) of
-                {ok, NewState} ->
-                    process_els(NewState);
-                Err ->
-                    Err
-            end
+            gather_els(State, [El | List])
     after 0 ->
-            {ok, State}
-    end.
+        List
+end.
+
+process_els(State, [El | Tail]) ->
+    case process_el(El, State) of
+        {ok, NewState} ->
+            process_els(NewState, Tail);
+        Err ->
+            Err
+    end;
+process_els(State, []) ->
+    {ok, State}.
 
 process_el({xmlstreamstart, <<"server-data">>, Attrs}, State) ->
     case fxml:get_attr_s(<<"xmlns">>, Attrs) of
@@ -315,7 +324,7 @@ process_el({xmlstreamstart, <<"server-data">>, Attrs}, State) ->
         ?NS_PIE ->
             {ok, State};
         NS ->
-            stop("Unknown 'server-data' namespace = ~s", [NS])
+            stop("Unknown 'server-data' namespace = ~ts", [NS])
     end;
 process_el({xmlstreamend, _}, State) ->
     {ok, State};
@@ -344,10 +353,10 @@ process_el({xmlstreamelement, #xmlel{name = <<"host">>,
                 true ->
                     process_users(Els, State#state{server = S});
                 false ->
-                    stop("Unknown host: ~s", [S])
+                    stop("Unknown host: ~ts", [S])
             end
     catch _:{bad_jid, _} ->
-            stop("Invalid 'jid': ~s", [JIDS])
+            stop("Invalid 'jid': ~ts", [JIDS])
     end;
 process_el({xmlstreamstart, <<"user">>, Attrs}, State = #state{server = S})
   when S /= <<"">> ->
@@ -395,7 +404,7 @@ process_user(#xmlel{name = <<"user">>, attrs = Attrs, children = Els},
 
     case jid:nodeprep(Name) of
         error ->
-            stop("Invalid 'user': ~s", [Name]);
+            stop("Invalid 'user': ~ts", [Name]);
         LUser ->
             case ejabberd_auth:try_register(LUser, LServer, Pass) of
                 ok ->
@@ -403,7 +412,7 @@ process_user(#xmlel{name = <<"user">>, attrs = Attrs, children = Els},
                 {error, invalid_password} when (Password == <<>>) ->
                     process_user_els(Els, State#state{user = LUser});
                 {error, Err} ->
-                    stop("Failed to create user '~s': ~p", [Name, Err])
+                    stop("Failed to create user '~ts': ~p", [Name, Err])
             end
     end.
 
@@ -442,7 +451,7 @@ process_user_el(#xmlel{name = Name, attrs = Attrs, children = Els} = El,
 	end
     catch _:{xmpp_codec, Why} ->
 	    ErrTxt = xmpp:format_error(Why),
-	    stop("failed to decode XML '~s': ~s",
+	    stop("failed to decode XML '~ts': ~ts",
 		 [fxml:element_to_binary(El), ErrTxt])
     end.
 
@@ -585,7 +594,7 @@ make_piefxis_xml_tail() ->
 
 %% @spec () -> string()
 make_piefxis_server_head() ->
-    io_lib:format("<server-data xmlns='~s' xmlns:xi='~s'>",
+    io_lib:format("<server-data xmlns='~ts' xmlns:xi='~ts'>",
                   [?NS_PIE, ?NS_XI]).
 
 %% @spec () -> string()
@@ -594,7 +603,7 @@ make_piefxis_server_tail() ->
 
 %% @spec (Host::string()) -> string()
 make_piefxis_host_head(Host) ->
-    io_lib:format("<host xmlns='~s' xmlns:xi='~s' jid='~s'>",
+    io_lib:format("<host xmlns='~ts' xmlns:xi='~ts' jid='~ts'>",
                   [?NS_PIE, ?NS_XI, Host]).
 
 %% @spec () -> string()
@@ -604,7 +613,7 @@ make_piefxis_host_tail() ->
 %% @spec (Fn::string()) -> string()
 make_xinclude(Fn) ->
     Base = filename:basename(Fn),
-    io_lib:format("<xi:include href='~s'/>", [Base]).
+    io_lib:format("<xi:include href='~ts'/>", [Base]).
 
 print(Fd, String) ->
     file:write(Fd, String).

@@ -5,7 +5,7 @@
 %%% Created :  4 May 2008 by Badlop <badlop@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -56,6 +56,7 @@
 -behaviour(gen_mod).
 
 -export([start/2, stop/1, reload/3, process/2, mod_options/1, depends/2]).
+-export([mod_doc/0]).
 
 -include("logger.hrl").
 
@@ -92,31 +93,20 @@ process([], #request{method = 'GET', lang = Lang}) ->
 process([<<"register.css">>],
 	#request{method = 'GET'}) ->
     serve_css();
-process([<<"new">>],
+process([Section],
 	#request{method = 'GET', lang = Lang, host = Host,
-		 ip = IP}) ->
-    case ejabberd_router:is_my_host(Host) of
+		 ip = {Addr, _Port}}) ->
+    Host2 = case ejabberd_router:is_my_host(Host) of
 	true ->
-	    {Addr, _Port} = IP,
-	    form_new_get(Host, Lang, Addr);
+	    Host;
 	false ->
-	    {400, [], <<"Host not served">>}
-    end;
-process([<<"delete">>],
-	#request{method = 'GET', lang = Lang, host = Host}) ->
-    case ejabberd_router:is_my_host(Host) of
-	true ->
-	    form_del_get(Host, Lang);
-	false ->
-	    {400, [], <<"Host not served">>}
-    end;
-process([<<"change_password">>],
-	#request{method = 'GET', lang = Lang, host = Host}) ->
-    case ejabberd_router:is_my_host(Host) of
-	true ->
-	    form_changepass_get(Host, Lang);
-	false ->
-	    {400, [], <<"Host not served">>}
+	    <<"">>
+    end,
+    case Section of
+	<<"new">> -> form_new_get(Host2, Lang, Addr);
+	<<"delete">> -> form_del_get(Host2, Lang);
+	<<"change_password">> -> form_changepass_get(Host2, Lang);
+	_ -> {404, [], "Not Found"}
     end;
 process([<<"new">>],
 	#request{method = 'POST', q = Q, ip = {Ip, _Port},
@@ -194,7 +184,7 @@ css() ->
 	{ok, Data} ->
 	    {ok, Data};
 	{error, Why} ->
-	    ?ERROR_MSG("Failed to read ~s: ~s", [File, file:format_error(Why)]),
+	    ?ERROR_MSG("Failed to read ~ts: ~ts", [File, file:format_error(Why)]),
 	    error
     end.
 
@@ -628,3 +618,12 @@ get_error_text({error, wrong_parameters}) ->
 
 mod_options(_) ->
     [].
+
+mod_doc() ->
+    #{desc =>
+          [?T("This module provides a web page where users can:"), "",
+           ?T("- Register a new account on the server."), "",
+           ?T("- Change the password from an existing account on the server."), "",
+           ?T("- Delete an existing account on the server."), "",
+           ?T("The module depends on 'mod_register' where all the configuration "
+              "is performed.")]}.

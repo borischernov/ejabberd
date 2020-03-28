@@ -5,7 +5,7 @@
 %%% Created : 26 Apr 2008 by Evgeniy Khramtsov <xramtsov@gmail.com>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -197,7 +197,7 @@ process_reply(#xdata{} = X) ->
 		captcha_not_found -> {error, not_found}
 	    end
     catch _:{captcha_form, Why} ->
-	    ?WARNING_MSG("Malformed CAPTCHA form: ~s",
+	    ?WARNING_MSG("Malformed CAPTCHA form: ~ts",
 			 [captcha_form:format_error(Why)]),
 	    {error, malformed}
     end;
@@ -392,7 +392,7 @@ create_image(Limiter, Key) ->
 				   {error, image_error()}.
 do_create_image(Key) ->
     FileName = get_prog_name(),
-    Cmd = lists:flatten(io_lib:format("~s ~s", [FileName, Key])),
+    Cmd = lists:flatten(io_lib:format("~ts ~ts", [FileName, Key])),
     case cmd(Cmd) of
       {ok,
        <<137, $P, $N, $G, $\r, $\n, 26, $\n, _/binary>> =
@@ -404,18 +404,18 @@ do_create_image(Key) ->
 	  when X == $7; X == $9 ->
 	  {ok, <<"image/gif">>, Key, Img};
       {error, enodata = Reason} ->
-	  ?ERROR_MSG("Failed to process output from \"~s\". "
+	  ?ERROR_MSG("Failed to process output from \"~ts\". "
 		     "Maybe ImageMagick's Convert program "
 		     "is not installed.",
 		     [Cmd]),
 	  {error, Reason};
       {error, Reason} ->
-	  ?ERROR_MSG("Failed to process an output from \"~s\": ~p",
+	  ?ERROR_MSG("Failed to process an output from \"~ts\": ~p",
 		     [Cmd, Reason]),
 	  {error, Reason};
       _ ->
 	  Reason = malformed_image,
-	  ?ERROR_MSG("Failed to process an output from \"~s\": ~p",
+	  ?ERROR_MSG("Failed to process an output from \"~ts\": ~p",
 		     [Cmd, Reason]),
 	  {error, Reason}
     end.

@@ -2,7 +2,7 @@
 %%% Created : 11 Dec 2016 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -25,7 +25,7 @@
 -protocol({xep, 78, '2.5'}).
 
 %% gen_mod API
--export([start/2, stop/1, reload/3, depends/2, mod_options/1]).
+-export([start/2, stop/1, reload/3, depends/2, mod_options/1, mod_doc/0]).
 %% hooks
 -export([c2s_unauthenticated_packet/2, c2s_stream_features/2]).
 
@@ -57,6 +57,15 @@ depends(_Host, _Opts) ->
 
 mod_options(_) ->
     [].
+
+mod_doc() ->
+    #{desc =>
+          [?T("The module implements "
+              "https://xmpp.org/extensions/xep-0078.html"
+              "[XEP-0078: Non-SASL Authentication]."), "",
+           ?T("NOTE: This type of authentication was obsoleted in "
+              "2008 and you unlikely need this module unless "
+              "you have something like outdated Jabber bots.")]}.
 
 -spec c2s_unauthenticated_packet(c2s_state(), iq()) ->
       c2s_state() | {stop, c2s_state()}.

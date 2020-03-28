@@ -5,7 +5,7 @@
 %%% Created :
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -43,11 +43,12 @@
 %% utility for other http modules
 -export([content_type/3]).
 
--export([reopen_log/0, mod_opt_type/1, mod_options/1, depends/2]).
+-export([reopen_log/0, mod_opt_type/1, mod_options/1, depends/2, mod_doc/0]).
 
 -include("logger.hrl").
 -include("ejabberd_http.hrl").
 -include_lib("kernel/include/file.hrl").
+-include("translate.hrl").
 
 -record(state,
 	{host, docroot, accesslog, accesslogfd,
@@ -137,7 +138,7 @@ initialize(Host, Opts) ->
     ContentTypes = build_list_content_types(
                      mod_http_fileserver_opt:content_types(Opts),
                      ?DEFAULT_CONTENT_TYPES),
-    ?DEBUG("Known content types: ~s",
+    ?DEBUG("Known content types: ~ts",
 	   [str:join([[$*, K, " -> ", V] || {K, V} <- ContentTypes],
 		     <<", ">>)]),
     #state{host = Host,
@@ -278,7 +279,7 @@ process(LocalPath, #request{host = Host, auth = Auth, headers = RHeaders} = Requ
 	add_to_log(FileSize, Code, Request#request{host = VHost}),
 	{Code, Headers, Contents}
     catch _:{Why, _} when Why == noproc; Why == invalid_domain; Why == unregistered_route ->
-	    ?DEBUG("Received an HTTP request with Host: ~s, "
+	    ?DEBUG("Received an HTTP request with Host: ~ts, "
 		   "but couldn't find the related "
 		   "ejabberd virtual host", [Host]),
 	    {FileSize1, Code1, Headers1, Contents1} = ?HTTP_ERR_HOST_UNKNOWN,
@@ -342,23 +343,25 @@ serve_index(FileName, [Index | T], CH, DefaultContentType, ContentTypes) ->
     end.
 
 serve_not_modified(FileInfo, FileName, CustomHeaders) ->
-    ?DEBUG("Delivering not modified: ~s", [FileName]),
+    ?DEBUG("Delivering not modified: ~ts", [FileName]),
     {0, 304,
-     [{<<"Server">>, <<"ejabberd">>},
-      {<<"Last-Modified">>, last_modified(FileInfo)}
-      | CustomHeaders], <<>>}.
+     ejabberd_http:apply_custom_headers(
+	 [{<<"Server">>, <<"ejabberd">>},
+	  {<<"Last-Modified">>, last_modified(FileInfo)}],
+	 CustomHeaders), <<>>}.
 
 %% Assume the file exists if we got this far and attempt to read it in
 %% and serve it up.
 serve_file(FileInfo, FileName, CustomHeaders, DefaultContentType, ContentTypes) ->
-    ?DEBUG("Delivering: ~s", [FileName]),
+    ?DEBUG("Delivering: ~ts", [FileName]),
     ContentType = content_type(FileName, DefaultContentType,
 			       ContentTypes),
     {FileInfo#file_info.size, 200,
-     [{<<"Server">>, <<"ejabberd">>},
-      {<<"Last-Modified">>, last_modified(FileInfo)},
-      {<<"Content-Type">>, ContentType}
-      | CustomHeaders],
+     ejabberd_http:apply_custom_headers(
+	 [{<<"Server">>, <<"ejabberd">>},
+	  {<<"Last-Modified">>, last_modified(FileInfo)},
+	  {<<"Content-Type">>, ContentType}],
+	 CustomHeaders),
      {file, FileName}}.
 
 %%----------------------------------------------------------------------
@@ -414,7 +417,7 @@ add_to_log(File, FileSize, Code, Request) ->
     %%   Missing time zone = (`+' | `-') 4*digit
     %%   Missing protocol version: HTTP/1.1
     %% For reference: http://httpd.apache.org/docs/2.2/logs.html
-    io:format(File, "~s - - [~p/~p/~p:~p:~p:~p] \"~s /~s~s\" ~p ~p ~p ~p~n",
+    io:format(File, "~ts - - [~p/~p/~p:~p:~p:~p] \"~ts /~ts~ts\" ~p ~p ~p ~p~n",
 	      [IP, Day, Month, Year, Hour, Minute, Second, Request#request.method, Path, Query, Code,
                FileSize, Referer, UserAgent]).
 
@@ -498,3 +501,87 @@ mod_options(_) ->
      {must_authenticate_with, []},
      %% Required option
      docroot].
+
+mod_doc() ->
+    #{desc =>
+          ?T("This simple module serves files from the local disk over HTTP."),
+      opts =>
+          [{accesslog,
+            #{value => ?T("Path"),
+              desc =>
+                  ?T("File to log accesses using an Apache-like format. "
+                     "No log will be recorded if this option is not specified.")}},
+           {docroot,
+            #{value => ?T("Path"),
+              desc =>
+                  ?T("Directory to serve the files from. "
+                     "This is a mandatory option.")}},
+           {content_types,
+            #{value => "{Extension: Type}",
+              desc =>
+                  ?T("Specify mappings of extension to content type. "
+                     "There are several content types already defined. "
+                     "With this option you can add new definitions "
+                     "or modify existing ones."),
+              example =>
+                  [{?T("The default value is shown in the example below:"),
+                    ["content_types:"|
+                     ["  " ++ binary_to_list(E) ++ ": " ++ binary_to_list(T)
+                      || {E, T} <- ?DEFAULT_CONTENT_TYPES]]}]}},
+           {default_content_type,
+            #{value => ?T("Type"),
+              desc =>
+                  ?T("Specify the content type to use for unknown extensions. "
+                     "The default value is 'application/octet-stream'.")}},
+           {custom_headers,
+            #{value => "{Name: Value}",
+              desc =>
+                  ?T("Indicate custom HTTP headers to be included in all responses. "
+                     "There are no custom headers by default.")}},
+           {directory_indices,
+            #{value => "[Index, ...]",
+              desc =>
+                  ?T("Indicate one or more directory index files, "
+                     "similarly to Apache's 'DirectoryIndex' variable. "
+                     "When an HTTP request hits a directory instead of a "
+                     "regular file, those directory indices are looked in order, "
+                     "and the first one found is returned. "
+                     "The default value is an empty list.")}},
+           {must_authenticate_with,
+            #{value => ?T("[{Username, Hostname}, ...]"),
+              desc =>
+                  ?T("List of accounts that are allowed to use this service. "
+		     "Default value: '[]'.")}}],
+      example =>
+          [{?T("This example configuration will serve the files from the "
+	       "local directory '/var/www' in the address "
+	       "'http://example.org:5280/pub/archive/'. In this example a new "
+	       "content type 'ogg' is defined, 'png' is redefined, and 'jpg' "
+	       "definition is deleted:"),
+	   ["listen:",
+           "  ...",
+           "  -",
+           "    port: 5280",
+           "    module: ejabberd_http",
+           "    request_handlers:",
+           "      ...",
+           "      /pub/archive: mod_http_fileserver",
+           "      ...",
+           "  ...",
+           "",
+           "modules:",
+           "  ...",
+           "  mod_http_fileserver:",
+           "    docroot: /var/www",
+           "    accesslog: /var/log/ejabberd/access.log",
+           "    directory_indices:",
+           "      - index.html",
+           "      - main.htm",
+           "    custom_headers:",
+           "      X-Powered-By: Erlang/OTP",
+           "      X-Fry: \"It's a widely-believed fact!\"",
+           "    content_types:",
+           "      .ogg: audio/ogg",
+           "      .png: image/png",
+           "    default_content_type: text/html",
+           "  ..."]}]}.

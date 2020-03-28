@@ -5,7 +5,7 @@
 %%% Created : 20 Jan 2016 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -354,6 +354,22 @@ parse1([$%, $( | S], Acc, State) ->
                              used_vars = [Name | State2#state.used_vars]}
         end,
     parse1(S1, [], State4);
+parse1("%ESCAPE" ++ S, Acc, State) ->
+    State1 = append_string(lists:reverse(Acc), State),
+    Convert =
+        erl_syntax:application(
+          erl_syntax:record_access(
+            erl_syntax:variable(?ESCAPE_VAR),
+            erl_syntax:atom(?ESCAPE_RECORD),
+            erl_syntax:atom(like_escape)),
+          []),
+    Var = State1#state.param_pos,
+    State2 =
+        State1#state{'query' = [{var, Var} | State1#state.'query'],
+                     args = [Convert | State1#state.args],
+                     params = [Var | State1#state.params],
+                     param_pos = State1#state.param_pos + 1},
+    parse1(S, [], State2);
 parse1([C | S], Acc, State) ->
     parse1(S, [C | Acc], State).
 
@@ -632,7 +648,11 @@ make_sql_upsert_insert(Table, ParseRes) ->
           ]),
     State.
 
-make_sql_upsert_pgsql901(Table, ParseRes) ->
+make_sql_upsert_pgsql901(Table, ParseRes0) ->
+    ParseRes = lists:map(
+        fun({"family", A2, A3}) -> {"\"family\"", A2, A3};
+           (Other) -> Other
+        end, ParseRes0),
     Update = make_sql_upsert_update(Table, ParseRes),
     Vals =
         lists:map(

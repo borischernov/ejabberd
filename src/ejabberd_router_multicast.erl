@@ -5,7 +5,7 @@
 %%% Created : 11 Aug 2007 by Badlop <badlop@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -211,7 +211,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% Destinations = [#jid]
 -spec do_route(binary(), [jid()], stanza()) -> any().
 do_route(Domain, Destinations, Packet) ->
-    ?DEBUG("Route multicast:~n~s~nDomain: ~s~nDestinations: ~s~n",
+    ?DEBUG("Route multicast:~n~ts~nDomain: ~ts~nDestinations: ~ts~n",
 	   [xmpp:pp(Packet), Domain,
 	    str:join([jid:encode(To) || To <- Destinations], <<", ">>)]),
     %% Try to find an appropriate multicast service

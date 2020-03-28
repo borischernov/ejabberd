@@ -15,6 +15,7 @@
 -export([auth_cache_missed/0]).
 -export([auth_cache_size/0]).
 -export([auth_method/0, auth_method/1]).
+-export([auth_opts/0, auth_opts/1]).
 -export([auth_password_format/0, auth_password_format/1]).
 -export([auth_use_cache/0, auth_use_cache/1]).
 -export([c2s_cafile/0, c2s_cafile/1]).
@@ -50,6 +51,8 @@
 -export([host_config/0]).
 -export([hosts/0]).
 -export([include_config_file/0, include_config_file/1]).
+-export([jwt_auth_only_rule/0, jwt_auth_only_rule/1]).
+-export([jwt_jid_field/0, jwt_jid_field/1]).
 -export([jwt_key/0, jwt_key/1]).
 -export([language/0, language/1]).
 -export([ldap_backups/0, ldap_backups/1]).
@@ -68,9 +71,7 @@
 -export([ldap_tls_verify/0, ldap_tls_verify/1]).
 -export([ldap_uids/0, ldap_uids/1]).
 -export([listen/0]).
--export([log_rate_limit/0]).
 -export([log_rotate_count/0]).
--export([log_rotate_date/0]).
 -export([log_rotate_size/0]).
 -export([loglevel/0]).
 -export([max_fsm_queue/0, max_fsm_queue/1]).
@@ -82,6 +83,7 @@
 -export([oauth_cache_life_time/0]).
 -export([oauth_cache_missed/0]).
 -export([oauth_cache_size/0]).
+-export([oauth_client_id_check/0, oauth_client_id_check/1]).
 -export([oauth_db_type/0]).
 -export([oauth_expire/0]).
 -export([oauth_use_cache/0]).
@@ -138,6 +140,7 @@
 -export([sql_password/0, sql_password/1]).
 -export([sql_pool_size/0, sql_pool_size/1]).
 -export([sql_port/0, sql_port/1]).
+-export([sql_prepared_statements/0, sql_prepared_statements/1]).
 -export([sql_query_timeout/0, sql_query_timeout/1]).
 -export([sql_queue_type/0, sql_queue_type/1]).
 -export([sql_server/0, sql_server/1]).
@@ -170,7 +173,7 @@ acl() ->
 acl(Host) ->
     ejabberd_config:get_option({acl, Host}).
 
--spec acme() -> #{'ca_url'=>binary(), 'contact'=>binary()}.
+-spec acme() -> #{'auto'=>boolean(), 'ca_url'=>binary(), 'cert_type'=>'ec' | 'rsa', 'contact'=>[binary()]}.
 acme() ->
     ejabberd_config:get_option({acme, global}).
 
@@ -218,6 +221,13 @@ auth_method() ->
 -spec auth_method(global | binary()) -> [atom()].
 auth_method(Host) ->
     ejabberd_config:get_option({auth_method, Host}).
+
+-spec auth_opts() -> [{any(),any()}].
+auth_opts() ->
+    auth_opts(global).
+-spec auth_opts(global | binary()) -> [{any(),any()}].
+auth_opts(Host) ->
+    ejabberd_config:get_option({auth_opts, Host}).
 
 -spec auth_password_format() -> 'plain' | 'scram'.
 auth_password_format() ->
@@ -425,6 +435,20 @@ include_config_file() ->
 include_config_file(Host) ->
     ejabberd_config:get_option({include_config_file, Host}).
 
+-spec jwt_auth_only_rule() -> atom().
+jwt_auth_only_rule() ->
+    jwt_auth_only_rule(global).
+-spec jwt_auth_only_rule(global | binary()) -> atom().
+jwt_auth_only_rule(Host) ->
+    ejabberd_config:get_option({jwt_auth_only_rule, Host}).
+
+-spec jwt_jid_field() -> binary().
+jwt_jid_field() ->
+    jwt_jid_field(global).
+-spec jwt_jid_field(global | binary()) -> binary().
+jwt_jid_field(Host) ->
+    ejabberd_config:get_option({jwt_jid_field, Host}).
+
 -spec jwt_key() -> jose_jwk:key() | 'undefined'.
 jwt_key() ->
     jwt_key(global).
@@ -548,23 +572,15 @@ ldap_uids(Host) ->
 listen() ->
     ejabberd_config:get_option({listen, global}).
 
--spec log_rate_limit() -> 'undefined' | non_neg_integer().
-log_rate_limit() ->
-    ejabberd_config:get_option({log_rate_limit, global}).
-
--spec log_rotate_count() -> 'undefined' | non_neg_integer().
+-spec log_rotate_count() -> non_neg_integer().
 log_rotate_count() ->
     ejabberd_config:get_option({log_rotate_count, global}).
 
--spec log_rotate_date() -> 'undefined' | string().
-log_rotate_date() ->
-    ejabberd_config:get_option({log_rotate_date, global}).
-
--spec log_rotate_size() -> 'undefined' | non_neg_integer().
+-spec log_rotate_size() -> 'infinity' | pos_integer().
 log_rotate_size() ->
     ejabberd_config:get_option({log_rotate_size, global}).
 
--spec loglevel() -> 0 | 1 | 2 | 3 | 4 | 5.
+-spec loglevel() -> ejabberd_logger:loglevel().
 loglevel() ->
     ejabberd_config:get_option({loglevel, global}).
 
@@ -613,11 +629,18 @@ oauth_cache_missed() ->
 oauth_cache_size() ->
     ejabberd_config:get_option({oauth_cache_size, global}).
 
+-spec oauth_client_id_check() -> 'allow' | 'db' | 'deny'.
+oauth_client_id_check() ->
+    oauth_client_id_check(global).
+-spec oauth_client_id_check(global | binary()) -> 'allow' | 'db' | 'deny'.
+oauth_client_id_check(Host) ->
+    ejabberd_config:get_option({oauth_client_id_check, Host}).
+
 -spec oauth_db_type() -> atom().
 oauth_db_type() ->
     ejabberd_config:get_option({oauth_db_type, global}).
 
--spec oauth_expire() -> non_neg_integer().
+-spec oauth_expire() -> pos_integer().
 oauth_expire() ->
     ejabberd_config:get_option({oauth_expire, global}).
 
@@ -923,6 +946,13 @@ sql_port() ->
 -spec sql_port(global | binary()) -> 1..1114111.
 sql_port(Host) ->
     ejabberd_config:get_option({sql_port, Host}).
+
+-spec sql_prepared_statements() -> boolean().
+sql_prepared_statements() ->
+    sql_prepared_statements(global).
+-spec sql_prepared_statements(global | binary()) -> boolean().
+sql_prepared_statements(Host) ->
+    ejabberd_config:get_option({sql_prepared_statements, Host}).
 
 -spec sql_query_timeout() -> pos_integer().
 sql_query_timeout() ->

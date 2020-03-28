@@ -4,7 +4,7 @@
 %%% Created : 11 Mar 2015 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -250,8 +250,8 @@ load_script() ->
 			V when V >= ?MIN_REDIS_VERSION ->
 			    ejabberd_redis:script_load(Data);
 			V ->
-			    ?CRITICAL_MSG("Unsupported Redis version: ~s. "
-					  "The version must be ~s or above",
+			    ?CRITICAL_MSG("Unsupported Redis version: ~ts. "
+					  "The version must be ~ts or above",
 					  [V, ?MIN_REDIS_VERSION]),
 			    {error, unsupported_redis_version}
 		    end;

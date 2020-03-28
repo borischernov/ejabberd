@@ -1,6 +1,6 @@
 %%%----------------------------------------------------------------------
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -93,7 +93,7 @@
 -define(GL(Ref, Title),
 	?XAE(<<"div">>, [{<<"class">>, <<"guidelink">>}],
 	     [?XAE(<<"a">>,
-		   [{<<"href">>, <<"/admin/doc/guide.html#", Ref/binary>>},
+		   [{<<"href">>, <<"https://docs.ejabberd.im/admin/configuration/#", Ref/binary>>},
 		    {<<"target">>, <<"_blank">>}],
 		   [?C(<<"[Guide: ", Title/binary, "]">>)])])).
 

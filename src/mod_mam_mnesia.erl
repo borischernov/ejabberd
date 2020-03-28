@@ -4,7 +4,7 @@
 %%% Created : 15 Apr 2016 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -127,7 +127,7 @@ delete_old_user_messages(User, TimeStamp, Type) ->
 	{atomic, ok} ->
 	    delete_old_user_messages(NextRecord, TimeStamp, Type);
 	{aborted, Err} ->
-	    ?ERROR_MSG("Cannot delete old MAM messages: ~s", [Err]),
+	    ?ERROR_MSG("Cannot delete old MAM messages: ~ts", [Err]),
 	    Err
     end.
 
@@ -138,7 +138,7 @@ store(Pkt, _, {LUser, LServer}, Type, Peer, Nick, _Dir, TS) ->
     case {mnesia:table_info(archive_msg, disc_only_copies),
 	  mnesia:table_info(archive_msg, memory)} of
 	{[_|_], TableSize} when TableSize > ?TABLE_SIZE_LIMIT ->
-	    ?ERROR_MSG("MAM archives too large, won't store message for ~s@~s",
+	    ?ERROR_MSG("MAM archives too large, won't store message for ~ts@~ts",
 		       [LUser, LServer]),
 	    {error, overflow};
 	_ ->
@@ -158,7 +158,7 @@ store(Pkt, _, {LUser, LServer}, Type, Peer, Nick, _Dir, TS) ->
 		{atomic, ok} ->
 		    ok;
 		{aborted, Err} ->
-		    ?ERROR_MSG("Cannot add message to MAM archive of ~s@~s: ~s",
+		    ?ERROR_MSG("Cannot add message to MAM archive of ~ts@~ts: ~ts",
 			       [LUser, LServer, Err]),
 		    Err
 	    end

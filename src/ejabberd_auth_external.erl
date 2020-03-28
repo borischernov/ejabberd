@@ -5,7 +5,7 @@
 %%% Created : 12 Dec 2004 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -101,5 +101,5 @@ check_password_extauth(User, _AuthzId, Server, Password) ->
 -spec failure(binary(), binary(), atom(), any()) -> {nocache, {error, db_failure}}.
 failure(User, Server, Fun, Reason) ->
     ?ERROR_MSG("External authentication program failed when calling "
-	       "'~s' for ~s@~s: ~p", [Fun, User, Server, Reason]),
+	       "'~ts' for ~ts@~ts: ~p", [Fun, User, Server, Reason]),
     {nocache, {error, db_failure}}.

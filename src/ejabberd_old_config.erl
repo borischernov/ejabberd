@@ -1,7 +1,7 @@
 %%%----------------------------------------------------------------------
 %%% Purpose: Transform old-style Erlang config to YAML config
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -523,7 +523,7 @@ transform_globals(Opts) ->
 transform_globals(Opt, Opts) when Opt == override_global;
 				  Opt == override_local;
 				  Opt == override_acls ->
-    ?WARNING_MSG("Option '~s' has no effect anymore", [Opt]),
+    ?WARNING_MSG("Option '~ts' has no effect anymore", [Opt]),
     Opts;
 transform_globals({node_start, _}, Opts) ->
     ?WARNING_MSG("Option 'node_start' has no effect anymore", []),

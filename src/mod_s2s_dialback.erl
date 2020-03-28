@@ -2,7 +2,7 @@
 %%% Created : 16 Dec 2016 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -26,6 +26,7 @@
 
 %% gen_mod API
 -export([start/2, stop/1, reload/3, depends/2, mod_opt_type/1, mod_options/1]).
+-export([mod_doc/0]).
 %% Hooks
 -export([s2s_out_auth_result/2, s2s_out_downgraded/2,
 	 s2s_in_packet/2, s2s_out_packet/2, s2s_in_recv/3,
@@ -95,6 +96,40 @@ mod_opt_type(access) ->
 mod_options(_Host) ->
     [{access, all}].
 
+mod_doc() ->
+    #{desc =>
+          [?T("The module adds support for "
+              "https://xmpp.org/extensions/xep-0220.html"
+              "[XEP-0220: Server Dialback] to provide server identity "
+              "verification based on DNS."), "",
+           ?T("WARNING: DNS-based verification is vulnerable to "
+              "https://en.wikipedia.org/wiki/DNS_spoofing"
+              "[DNS cache poisoning], so modern servers rely on "
+              "verification based on PKIX certificates. Thus this module "
+              "is only recommended for backward compatibility "
+              "with servers running outdated software or non-TLS servers, "
+              "or those with invalid certificates (as long as you accept "
+              "the risks, e.g. you assume that the remote server has "
+              "an invalid certificate due to poor administration and "
+              "not because it's compromised).")],
+      opts =>
+          [{access,
+            #{value => ?T("AccessName"),
+              desc =>
+                  ?T("An access rule that can be used to restrict "
+                     "dialback for some servers. The default value "
+                     "is 'all'.")}}],
+      example =>
+          ["modules:",
+           "  ...",
+           "  mod_s2s_dialback:",
+           "    access:",
+           "      allow:",
+           "        server: legacy.domain.tld",
+           "        server: invalid-cert.example.org",
+           "      deny: all",
+           "  ..."]}.
+
 s2s_in_features(Acc, _) ->
     [#db_feature{errors = true}|Acc].
 
@@ -140,7 +175,7 @@ s2s_out_auth_result(#{db_enabled := true,
 		      remote_server := RServer} = State, {false, _}) ->
     %% SASL authentication has failed, retrying with dialback
     %% Sending dialback request, section 2.1.1, step 1
-    ?INFO_MSG("(~s) Retrying with s2s dialback authentication: ~s -> ~s (~s)",
+    ?INFO_MSG("(~ts) Retrying with s2s dialback authentication: ~ts -> ~ts (~ts)",
 	      [xmpp_socket:pp(Socket), LServer, RServer,
 	       ejabberd_config:may_hide_data(misc:ip_to_list(IP))]),
     State1 = maps:remove(stop_reason, State#{on_route => queue}),
@@ -159,8 +194,8 @@ s2s_out_downgraded(#{db_enabled := true,
 		     remote_server := RServer} = State, _) ->
     %% non-RFC compliant server detected, send dialback request instantly,
     %% section 2.1.1, step 1
-    ?INFO_MSG("(~s) Trying s2s dialback authentication with "
-	      "non-RFC compliant server: ~s -> ~s (~s)",
+    ?INFO_MSG("(~ts) Trying s2s dialback authentication with "
+	      "non-RFC compliant server: ~ts -> ~ts (~ts)",
 	      [xmpp_socket:pp(Socket), LServer, RServer,
 	       ejabberd_config:may_hide_data(misc:ip_to_list(IP))]),
     {stop, send_db_request(State)};
@@ -195,7 +230,7 @@ s2s_in_packet(State, #db_verify{to = To, from = From, key = Key,
     {stop, ejabberd_s2s_in:send(State, Response)};
 s2s_in_packet(State, Pkt) when is_record(Pkt, db_result);
 			       is_record(Pkt, db_verify) ->
-    ?WARNING_MSG("Got stray dialback packet:~n~s", [xmpp:pp(Pkt)]),
+    ?WARNING_MSG("Got stray dialback packet:~n~ts", [xmpp:pp(Pkt)]),
     State;
 s2s_in_packet(State, _) ->
     State.
@@ -249,7 +284,7 @@ s2s_out_packet(#{server := LServer, remote_server := RServer} = State,
     end;
 s2s_out_packet(State, Pkt) when is_record(Pkt, db_result);
 				is_record(Pkt, db_verify) ->
-    ?WARNING_MSG("Got stray dialback packet:~n~s", [xmpp:pp(Pkt)]),
+    ?WARNING_MSG("Got stray dialback packet:~n~ts", [xmpp:pp(Pkt)]),
     State;
 s2s_out_packet(State, _) ->
     State.

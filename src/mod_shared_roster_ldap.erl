@@ -7,7 +7,7 @@
 %%% Created :  5 Mar 2005 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -50,7 +50,7 @@
 -define(USER_CACHE, shared_roster_ldap_user_cache).
 -define(GROUP_CACHE, shared_roster_ldap_group_cache).
 -define(LDAP_SEARCH_TIMEOUT, 5).    %% Timeout for LDAP search queries in seconds
--define(INVALID_SETTING_MSG, "~s is not properly set! ~s will not function.").
+-define(INVALID_SETTING_MSG, "~ts is not properly set! ~ts will not function.").
 
 -record(state,
 	{host = <<"">>                                :: binary(),

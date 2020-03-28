@@ -5,7 +5,7 @@
 %%% Created : 15 Nov 2005 by Magnus Henoch <henoch@dtek.chalmers.se>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -36,7 +36,7 @@
 	 get_local_identity/5, get_local_features/5,
 	 get_sm_commands/5, get_sm_identity/5, get_sm_features/5,
 	 ping_item/4, ping_command/4, mod_opt_type/1, depends/2,
-	 mod_options/1]).
+	 mod_options/1, mod_doc/0]).
 
 -include("logger.hrl").
 -include("xmpp.hrl").
@@ -278,3 +278,15 @@ mod_opt_type(report_commands_node) ->
 
 mod_options(_Host) ->
     [{report_commands_node, false}].
+
+mod_doc() ->
+    #{desc =>
+          ?T("This module implements https://xmpp.org/extensions/xep-0050.html"
+             "[XEP-0050: Ad-Hoc Commands]. It's an auxiliary module and is "
+             "only needed by some of the other modules."),
+      opts =>
+          [{report_commands_node,
+            #{value => "true | false",
+              desc =>
+                  ?T("Provide the Commands item in the Service Disvocery. "
+		     "Default value: 'false'.")}}]}.

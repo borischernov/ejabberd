@@ -5,7 +5,7 @@
 %%% Created : 28 Mar 2017 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2017-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2017-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -89,7 +89,7 @@ find_session(SID) ->
 	    try
 		{ok, binary_to_term(Pid)}
 	    catch _:badarg ->
-		    ?ERROR_MSG("Malformed data in redis (key = '~s'): ~p",
+		    ?ERROR_MSG("Malformed data in redis (key = '~ts'): ~p",
 			       [SID, Pid]),
 		    {error, db_failure}
 	    end;

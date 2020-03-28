@@ -5,7 +5,7 @@
 %%% Created : 21 Jul 2003 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -36,7 +36,7 @@
 	 check_packet/4, remove_user/2, encode_list_item/1,
          get_user_lists/2, get_user_list/3,
 	 set_list/1, set_list/4, set_default_list/3,
-	 user_send_packet/1,
+	 user_send_packet/1, mod_doc/0,
 	 import_start/2, import_stop/2, import/5, import_info/0,
 	 mod_opt_type/1, mod_options/1, depends/2]).
 
@@ -416,7 +416,7 @@ update_c2s_state_with_privacy_list(#iq{type = set,
 	#privacy_query{default = undefined, active = Active} ->
 	    case Active of
 		none ->
-		    ?DEBUG("Removing active privacy list for user: ~s",
+		    ?DEBUG("Removing active privacy list for user: ~ts",
 			   [jid:encode(To)]),
 		    State#{privacy_active_list => none};
 		undefined ->
@@ -424,7 +424,7 @@ update_c2s_state_with_privacy_list(#iq{type = set,
 		_ ->
 		    case get_user_list(U, S, Active) of
 			{ok, _} ->
-			    ?DEBUG("Setting active privacy list '~s' for user: ~s",
+			    ?DEBUG("Setting active privacy list '~ts' for user: ~ts",
 				   [Active, jid:encode(To)]),
 			    State#{privacy_active_list => Active};
 			_ ->
@@ -548,8 +548,8 @@ check_packet(Acc, #{jid := JID} = State, Packet, Dir) ->
 		{ok, {_, List}} ->
 		    do_check_packet(JID, List, Packet, Dir);
 		_ ->
-		    ?DEBUG("Non-existing active list '~s' is set "
-			   "for user '~s'", [ListName, jid:encode(JID)]),
+		    ?DEBUG("Non-existing active list '~ts' is set "
+			   "for user '~ts'", [ListName, jid:encode(JID)]),
 		    check_packet(Acc, JID, Packet, Dir)
 	    end
     end;
@@ -868,3 +868,35 @@ mod_options(Host) ->
      {cache_size, ejabberd_option:cache_size(Host)},
      {cache_missed, ejabberd_option:cache_missed(Host)},
      {cache_life_time, ejabberd_option:cache_life_time(Host)}].
+
+mod_doc() ->
+    #{desc =>
+          [?T("This module implements "
+              "https://xmpp.org/extensions/xep-0016.html"
+              "[XEP-0016: Privacy Lists]."), "",
+           ?T("NOTE: Nowadays modern XMPP clients rely on "
+              "https://xmpp.org/extensions/xep-0191.html"
+              "[XEP-0191: Blocking Command] which is implemented by "
+              "'mod_blocking' module. However, you still need "
+              "'mod_privacy' loaded in order for 'mod_blocking' to work.")],
+      opts =>
+          [{db_type,
+            #{value => "mnesia | sql",
+              desc =>
+                  ?T("Same as top-level 'default_db' option, but applied to this module only.")}},
+           {use_cache,
+            #{value => "true | false",
+              desc =>
+                  ?T("Same as top-level 'use_cache' option, but applied to this module only.")}},
+           {cache_size,
+            #{value => "pos_integer() | infinity",
+              desc =>
+                  ?T("Same as top-level 'cache_size' option, but applied to this module only.")}},
+           {cache_missed,
+            #{value => "true | false",
+              desc =>
+                  ?T("Same as top-level 'cache_missed' option, but applied to this module only.")}},
+           {cache_life_time,
+            #{value => "timeout()",
+              desc =>
+                  ?T("Same as top-level 'cache_life_time' option, but applied to this module only.")}}]}.

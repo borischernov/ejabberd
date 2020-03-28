@@ -3,7 +3,7 @@
 %%% Created : 28 Mar 2017 by Evgeny Khramtsov <ekhramtsov@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -125,8 +125,8 @@ row_to_route(Domain, {ServerHost, NodeS, PidS, LocalHintS} = Row) ->
 	    StackTrace = ?EX_STACK(St),
 	    ?ERROR_MSG("Failed to decode row from 'route' table:~n"
 		       "** Row = ~p~n"
-		       "** Domain = ~s~n"
-		       "** ~s",
+		       "** Domain = ~ts~n"
+		       "** ~ts",
 		       [Row, Domain,
 			misc:format_exception(2, Class, Reason, StackTrace)]),
 	    []

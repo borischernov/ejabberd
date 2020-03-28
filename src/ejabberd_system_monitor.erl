@@ -5,7 +5,7 @@
 %%% Created : 21 Mar 2007 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -36,9 +36,7 @@
 -export([init/1, handle_event/2, handle_call/2,
 	 handle_info/2, terminate/2, code_change/3]).
 
-%% We don't use ejabberd logger because lager can be overloaded
-%% too and alarm_handler may get stuck.
-%%-include("logger.hrl").
+-include("logger.hrl").
 
 -define(CHECK_INTERVAL, timer:seconds(30)).
 
@@ -95,8 +93,8 @@ handle_event({clear_alarm, system_memory_high_watermark}, State) ->
 handle_event({set_alarm, {process_memory_high_watermark, Pid}}, State) ->
     case proc_stat(Pid, get_app_pids()) of
 	#proc_stat{name = Name} = ProcStat ->
-	    error_logger:warning_msg(
-	      "Process ~p consumes more than 5% of OS memory (~s)~n",
+	    ?WARNING_MSG(
+	      "Process ~p consumes more than 5% of OS memory (~ts)~n",
 	      [Name, format_proc(ProcStat)]),
 	    handle_overload(State),
 	    {ok, State};
@@ -106,7 +104,7 @@ handle_event({set_alarm, {process_memory_high_watermark, Pid}}, State) ->
 handle_event({clear_alarm, process_memory_high_watermark}, State) ->
     {ok, State};
 handle_event(Event, State) ->
-    error_logger:warning_msg("unexpected event: ~p~n", [Event]),
+    ?WARNING_MSG("unexpected event: ~p~n", [Event]),
     {ok, State}.
 
 handle_call(_Request, State) ->
@@ -116,7 +114,7 @@ handle_info({timeout, _TRef, handle_overload}, State) ->
     handle_overload(State),
     {ok, restart_timer(State)};
 handle_info(Info, State) ->
-    error_logger:warning_msg("unexpected info: ~p~n", [Info]),
+    ?WARNING_MSG("unexpected info: ~p~n", [Info]),
     {ok, State}.
 
 terminate(_Reason, _State) ->
@@ -139,11 +137,11 @@ handle_overload(_State, Procs) ->
     MaxMsgs = ejabberd_option:oom_queue(),
     if TotalMsgs >= MaxMsgs ->
 	    SortedStats = lists:reverse(lists:keysort(#proc_stat.qlen, Stats)),
-	    error_logger:warning_msg(
+	    ?WARNING_MSG(
 	      "The system is overloaded with ~b messages "
 	      "queued by ~b process(es) (~b%) "
-	      "from the following applications: ~s; "
-	      "the top processes are:~n~s~n",
+	      "from the following applications: ~ts; "
+	      "the top processes are:~n~ts~n",
 	      [TotalMsgs, ProcsNum,
 	       round(ProcsNum*100/length(Procs)),
 	       format_apps(Apps),
@@ -248,13 +246,13 @@ format_proc(#proc_stat{qlen = Len, memory = Mem, initial_call = InitCall,
 		       current_function = CurrFun, ancestors = Ancs,
 		       application = App}) ->
     io_lib:format(
-      "msgs = ~b, memory = ~b, initial_call = ~s, "
-      "current_function = ~s, ancestors = ~w, application = ~w",
+      "msgs = ~b, memory = ~b, initial_call = ~ts, "
+      "current_function = ~ts, ancestors = ~w, application = ~w",
       [Len, Mem, format_mfa(InitCall), format_mfa(CurrFun), Ancs, App]).
 
 -spec format_mfa(mfa()) -> iodata().
 format_mfa({M, F, A}) when is_atom(M), is_atom(F), is_integer(A) ->
-    io_lib:format("~s:~s/~b", [M, F, A]);
+    io_lib:format("~ts:~ts/~b", [M, F, A]);
 format_mfa(WTF) ->
     io_lib:format("~w", [WTF]).
 
@@ -274,7 +272,7 @@ do_kill(Stats, Threshold) ->
 		     when Len >= Threshold ->
 		       case lists:member(App, excluded_apps()) of
 			   true ->
-			       error_logger:warning_msg(
+			       ?WARNING_MSG(
 				 "Unable to kill process ~p from whitelisted "
 				 "application ~p~n", [Name, App]),
 			       false;
@@ -291,7 +289,7 @@ do_kill(Stats, Threshold) ->
 	       end, Stats),
     TotalKilled = length(Killed),
     if TotalKilled > 0 ->
-	    error_logger:error_msg(
+	    ?ERROR_MSG(
 	      "Killed ~b process(es) consuming more than ~b message(s) each~n",
 	      [TotalKilled, Threshold]);
        true ->

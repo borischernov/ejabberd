@@ -5,7 +5,7 @@
 %%% Created : 27 Feb 2004 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -31,7 +31,8 @@
 %% External exports
 -export([start/3, start_link/3,
 	 accept/1, receive_headers/1, recv_file/2,
-         listen_opt_type/1, listen_options/0]).
+	 listen_opt_type/1, listen_options/0,
+	 apply_custom_headers/2]).
 
 -export([init/3]).
 
@@ -179,7 +180,7 @@ send_file(State, Fd, Size, FileName) ->
 	end
     catch _:{case_clause, {error, Why}} ->
 	    if Why /= closed ->
-		    ?WARNING_MSG("Failed to read ~s: ~s",
+		    ?WARNING_MSG("Failed to read ~ts: ~ts",
 				 [FileName, file_format_error(Why)]),
 		    exit(normal);
 	       true ->
@@ -491,19 +492,19 @@ process_request(#state{request_method = Method,
 		      {Status, Headers, El}
 			when is_record(El, xmlel) ->
 			  make_xhtml_output(State, Status,
-					    Headers ++ CustomHeaders, El);
+					    apply_custom_headers(Headers, CustomHeaders), El);
 		      Output when is_binary(Output) or is_list(Output) ->
 			  make_text_output(State, 200, CustomHeaders, Output);
 		      {Status, Headers, Output}
 			when is_binary(Output) or is_list(Output) ->
 			  make_text_output(State, Status,
-					   Headers ++ CustomHeaders, Output);
+					   apply_custom_headers(Headers, CustomHeaders), Output);
 		      {Status, Headers, {file, FileName}} ->
 			  make_file_output(State, Status, Headers, FileName);
 		      {Status, Reason, Headers, Output}
 			when is_binary(Output) or is_list(Output) ->
 			  make_text_output(State, Status, Reason,
-					   Headers ++ CustomHeaders, Output);
+					   apply_custom_headers(Headers, CustomHeaders), Output);
 		      _ ->
 			  none
 		  end,
@@ -530,7 +531,7 @@ analyze_ip_xff({IPLast, Port}, XFF) ->
 		     {ok, IPFirst} = inet_parse:address(
                                        binary_to_list(ClientIP)),
 		     ?DEBUG("The IP ~w was replaced with ~w due to "
-			    "header X-Forwarded-For: ~s",
+			    "header X-Forwarded-For: ~ts",
 			    [IPLast, IPFirst, XFF]),
 		     IPFirst;
 		 false -> IPLast
@@ -677,12 +678,12 @@ make_file_output(State, Status, Headers, FileName) ->
 		    none;
 		{error, Why} ->
 		    Reason = file_format_error(Why),
-		    ?ERROR_MSG("Failed to open ~s: ~s", [FileName, Reason]),
+		    ?ERROR_MSG("Failed to open ~ts: ~ts", [FileName, Reason]),
 		    make_text_output(State, 404, Reason, [], <<>>)
 	    end;
 	{error, Why} ->
 	    Reason = file_format_error(Why),
-	    ?ERROR_MSG("Failed to read info of ~s: ~s", [FileName, Reason]),
+	    ?ERROR_MSG("Failed to read info of ~ts: ~ts", [FileName, Reason]),
 	    make_text_output(State, 404, Reason, [], <<>>)
     end.
 
@@ -854,6 +855,15 @@ parse_urlencoded(<<H, Tail/binary>>, Last, Cur, State) ->
 parse_urlencoded(<<>>, Last, Cur, _State) ->
     [{Last, Cur}];
 parse_urlencoded(undefined, _, _, _) -> [].
+
+apply_custom_headers(Headers, CustomHeaders) ->
+    {Doctype, Headers2} = case Headers -- [html] of
+	Headers -> {[], Headers};
+	Other -> {[html], Other}
+    end,
+    M = maps:merge(maps:from_list(Headers2),
+		   maps:from_list(CustomHeaders)),
+    Doctype ++ maps:to_list(M).
 
 % The following code is mostly taken from yaws_ssl.erl
 

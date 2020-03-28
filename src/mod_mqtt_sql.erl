@@ -1,6 +1,6 @@
 %%%-------------------------------------------------------------------
 %%% @author Evgeny Khramtsov <ekhramtsov@process-one.net>
-%%% @copyright (C) 2002-2019 ProcessOne, SARL. All Rights Reserved.
+%%% @copyright (C) 2002-2020 ProcessOne, SARL. All Rights Reserved.
 %%%
 %%% Licensed under the Apache License, Version 2.0 (the "License");
 %%% you may not use this file except in compliance with the License.
@@ -92,12 +92,12 @@ lookup_published({_, LServer, _}, Topic) ->
                             {ok, {Payload, QoS, Props, Expiry}}
                     catch _:badarg ->
                             ?ERROR_MSG("Malformed value of 'payload_format' column "
-                                       "for topic '~s'", [Topic]),
+                                       "for topic '~ts'", [Topic]),
                             {error, db_failure}
                     end
             catch _:badarg ->
                     ?ERROR_MSG("Malformed value of 'user_properties' column "
-                               "for topic '~s'", [Topic]),
+                               "for topic '~ts'", [Topic]),
                     {error, db_failure}
             end;
 	{selected, []} ->

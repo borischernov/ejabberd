@@ -66,6 +66,8 @@ access_rules:
 acl:
   local:
     user_regexp: ""
+  admin:
+    user: "admin"
 language: en
 listen:
   -
@@ -84,6 +86,7 @@ listen:
     port: WEB_PORT
     module: ejabberd_http
     request_handlers:
+      "/admin": ejabberd_web_admin
       "/api": mod_http_api
       "/upload": mod_http_upload
       "/captcha": ejabberd_captcha
@@ -101,11 +104,13 @@ modules:
   mod_disco: []
   mod_ping: []
   mod_proxy65:
+    port: PROXY_PORT
     vcard: VCARD
   mod_muc:
     vcard: VCARD
   mod_muc_admin: []
   mod_carboncopy: []
+  mod_jidprep: []
   mod_mam: []
   mod_last: []
   mod_register:

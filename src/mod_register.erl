@@ -5,7 +5,7 @@
 %%% Created :  8 Dec 2002 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -35,7 +35,7 @@
 	 c2s_unauthenticated_packet/2, try_register/4,
 	 process_iq/1, send_registration_notifications/3,
 	 mod_opt_type/1, mod_options/1, depends/2,
-	 format_error/1]).
+	 format_error/1, mod_doc/0]).
 
 -include("logger.hrl").
 -include("xmpp.hrl").
@@ -114,8 +114,14 @@ process_iq(#iq{from = From, to = To} = IQ, Source) ->
 	end,
     Server = To#jid.lserver,
     Access = mod_register_opt:access_remove(Server),
-    AllowRemove = allow == acl:match_rule(Server, Access, From),
-    process_iq(IQ, Source, IsCaptchaEnabled, AllowRemove).
+    Remove = case acl:match_rule(Server, Access, From) of
+                 deny -> deny;
+                 allow when From#jid.lserver /= Server ->
+                     deny;
+                 allow ->
+                     check_access(From#jid.luser, Server, Source)
+             end,
+    process_iq(IQ, Source, IsCaptchaEnabled, Remove == allow).
 
 process_iq(#iq{type = set, lang = Lang,
 	       sub_els = [#register{remove = true}]} = IQ,
@@ -131,12 +137,24 @@ process_iq(#iq{type = set, lang = Lang, to = To, from = From,
     if is_binary(User) ->
 	    case From of
 		#jid{user = User, lserver = Server} ->
+                    ResIQ = xmpp:make_iq_result(IQ),
+                    ejabberd_router:route(ResIQ),
 		    ejabberd_auth:remove_user(User, Server),
-		    xmpp:make_iq_result(IQ);
+                    ignore;
 		_ ->
 		    if is_binary(Password) ->
-			    ejabberd_auth:remove_user(User, Server, Password),
-			    xmpp:make_iq_result(IQ);
+                            case ejabberd_auth:check_password(
+                                   User, <<"">>, Server, Password) of
+                                true ->
+                                    ResIQ = xmpp:make_iq_result(IQ),
+                                    ejabberd_router:route(ResIQ),
+                                    ejabberd_auth:remove_user(User, Server),
+                                    ignore;
+                                false ->
+                                    Txt = ?T("Incorrect password"),
+                                    xmpp:make_error(
+                                      IQ, xmpp:err_forbidden(Txt, Lang))
+                            end;
 		       true ->
 			    Txt = ?T("No 'password' found in this query"),
 			    xmpp:make_error(IQ, xmpp:err_bad_request(Txt, Lang))
@@ -283,7 +301,7 @@ try_set_password(User, Server, Password) ->
 try_set_password(User, Server, Password, #iq{lang = Lang, meta = M} = IQ) ->
     case try_set_password(User, Server, Password) of
 	ok ->
-	    ?INFO_MSG("~s has changed password from ~s",
+	    ?INFO_MSG("~ts has changed password from ~ts",
 		      [jid:encode({User, Server, <<"">>}),
 		       ejabberd_config:may_hide_data(
 			 misc:ip_to_list(maps:get(ip, M, {0,0,0,0})))]),
@@ -341,7 +359,7 @@ try_register(User, Server, Password, SourceRaw, Lang) ->
 	ok ->
 	    JID = jid:make(User, Server),
 	    Source = may_remove_resource(SourceRaw),
-	    ?INFO_MSG("The account ~s was registered from IP address ~s",
+	    ?INFO_MSG("The account ~ts was registered from IP address ~ts",
 		      [jid:encode({User, Server, <<"">>}),
 		       ejabberd_config:may_hide_data(ip_to_string(Source))]),
 	    send_welcome_message(JID),
@@ -602,3 +620,68 @@ mod_options(_Host) ->
      {registration_watchers, []},
      {redirect_url, undefined},
      {welcome_message, {<<>>, <<>>}}].
+
+mod_doc() ->
+    #{desc =>
+          [?T("This module adds support for https://xmpp.org/extensions/xep-0077.html"
+              "[XEP-0077: In-Band Registration]. "
+              "This protocol enables end users to use a XMPP client to:"), "",
+           ?T("* Register a new account on the server."), "",
+           ?T("* Change the password from an existing account on the server."), "",
+           ?T("* Delete an existing account on the server.")],
+      opts =>
+          [{access,
+            #{value => ?T("AccessName"),
+              desc =>
+                  ?T("Specify rules to restrict what usernames can be registered and "
+                     "unregistered. If a rule returns 'deny' on the requested username, "
+                     "registration and unregistration of that user name is denied. "
+                     "There are no restrictions by default.")}},
+           {access_from,
+            #{value => ?T("AccessName"),
+              desc =>
+                  ?T("By default, 'ejabberd' doesn't allow to register new accounts "
+                     "from s2s or existing c2s sessions. You can change it by defining "
+                     "access rule in this option. Use with care: allowing registration "
+                     "from s2s leads to uncontrolled massive accounts creation by rogue users.")}},
+           {access_remove,
+            #{value => ?T("AccessName"),
+              desc =>
+                  ?T("Specify rules to restrict access for user unregistration. "
+                     "By default any user is able to unregister their account.")}},
+           {captcha_protected,
+            #{value => "true | false",
+              desc =>
+                  ?T("Protect registrations with CAPTCHA (see section "
+                     "https://docs.ejabberd.im/admin/configuration/#captcha[CAPTCHA] "
+                     "of the Configuration Guide). The default is 'false'.")}},
+           {ip_access,
+            #{value => ?T("AccessName"),
+              desc =>
+                  ?T("Define rules to allow or deny account registration depending "
+                     "on the IP address of the XMPP client. The 'AccessName' should "
+                     "be of type 'ip'. The default value is 'all'.")}},
+           {password_strength,
+            #{value => "Entropy",
+              desc =>
+                  ?T("This option sets the minimum "
+                     "https://en.wikipedia.org/wiki/Entropy_(information_theory)"
+                     "[Shannon entropy] for passwords. The value 'Entropy' is a "
+                     "number of bits of entropy. The recommended minimum is 32 bits. "
+                     "The default is 0, i.e. no checks are performed.")}},
+           {registration_watchers,
+            #{value => "[JID, ...]",
+              desc =>
+                  ?T("This option defines a list of JIDs which will be notified each "
+                     "time a new account is registered.")}},
+           {redirect_url,
+            #{value => ?T("URL"),
+              desc =>
+                  ?T("This option enables registration redirection as described in "
+                     "https://xmpp.org/extensions/xep-0077.html#redirect"
+                     "[XEP-0077: In-Band Registration: Redirection].")}},
+           {welcome_message,
+            #{value => "{subject: Subject, body: Body}",
+              desc =>
+                  ?T("Set a welcome message that is sent to each newly registered account. "
+                     "The message will have subject 'Subject' and text 'Body'.")}}]}.

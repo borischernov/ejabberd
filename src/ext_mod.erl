@@ -5,7 +5,7 @@
 %%% Created : 19 Feb 2015 by Christophe Romain <christophe.romain@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2006-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2006-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -34,7 +34,7 @@
          install/1, uninstall/1, upgrade/0, upgrade/1, add_paths/0,
          add_sources/1, add_sources/2, del_sources/1, modules_dir/0,
          config_dir/0, get_commands_spec/0]).
-
+-export([modules_configs/0, module_ebin_dir/1]).
 -export([compile_erlang_file/2, compile_elixir_file/2]).
 
 %% gen_server callbacks
@@ -159,7 +159,7 @@ update() ->
         end, Contrib, modules_spec(sources_dir(), "*/*")),
     Repos = maps:fold(fun(Repo, _Mods, Acc) ->
                 Update = add_sources(Repo),
-                ?INFO_MSG("Update packages from repo ~s: ~p", [Repo, Update]),
+                ?INFO_MSG("Update packages from repo ~ts: ~p", [Repo, Update]),
                 case Update of
                     ok -> Acc;
                     Error -> [{repository, Repo, Error}|Acc]
@@ -168,7 +168,7 @@ update() ->
     Res = lists:foldl(fun({Package, Spec}, Acc) ->
                 Repo = proplists:get_value(url, Spec, ""),
                 Update = add_sources(Package, Repo),
-                ?INFO_MSG("Update package ~s: ~p", [Package, Update]),
+                ?INFO_MSG("Update package ~ts: ~p", [Package, Update]),
                 case Update of
                     ok -> Acc;
                     Error -> [{Package, Repo, Error}|Acc]
@@ -426,6 +426,14 @@ config_dir() ->
     DefaultDir = filename:join(modules_dir(), "conf"),
     getenv("CONTRIB_MODULES_CONF_DIR", DefaultDir).
 
+-spec modules_configs() -> [binary()].
+modules_configs() ->
+    Fs = [{filename:rootname(filename:basename(F)), F}
+	  || F <- filelib:wildcard(config_dir() ++ "/*.{yml,yaml}")
+		 ++ filelib:wildcard(modules_dir() ++ "/*/conf/*.{yml,yaml}")],
+    [unicode:characters_to_binary(proplists:get_value(F, Fs))
+     || F <- proplists:get_keys(Fs)].
+
 module_lib_dir(Package) ->
     filename:join(modules_dir(), Package).
 
@@ -562,7 +570,7 @@ compile_result(Results) ->
     end.
 
 compile_options() ->
-    [verbose, report_errors, report_warnings]
+    [verbose, report_errors, report_warnings, ?ALL_DEFS]
     ++ [{i, filename:join(app_dir(App), "include")}
         || App <- [fast_xml, xmpp, p1_utils, ejabberd]]
     ++ [{i, filename:join(mod_dir(Mod), "include")}

@@ -5,7 +5,7 @@
 %%% Created : 24 Aug 2008 by Stephan Maka <stephan@spaceboyz.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -30,7 +30,7 @@
 -protocol({xep, 191, '1.2'}).
 
 -export([start/2, stop/1, reload/3, process_iq/1, depends/2,
-	 disco_features/5, mod_options/1]).
+	 disco_features/5, mod_options/1, mod_doc/0]).
 
 -include("logger.hrl").
 -include("xmpp.hrl").
@@ -166,7 +166,7 @@ process_block(#iq{from = From} = IQ, LJIDs) ->
 			    broadcast_event(From, #block{items = Items}),
 			    xmpp:make_iq_result(IQ);
 			{error, notfound} ->
-			    ?ERROR_MSG("Failed to set default list '~s': "
+			    ?ERROR_MSG("Failed to set default list '~ts': "
 				       "the list should exist, but not found",
 				       [Name]),
 			    err_db_failure(IQ);
@@ -265,3 +265,11 @@ err_db_failure(#iq{lang = Lang} = IQ) ->
 
 mod_options(_Host) ->
     [].
+
+mod_doc() ->
+    #{desc =>
+          [?T("The module implements "
+              "https://xmpp.org/extensions/xep-0191.html"
+              "[XEP-0191: Blocking Command]."), "",
+           ?T("This module depends on 'mod_privacy' where "
+              "all the configuration is performed.")]}.

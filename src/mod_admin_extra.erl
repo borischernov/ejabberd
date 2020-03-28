@@ -5,7 +5,7 @@
 %%% Created : 10 Aug 2008 by Badlop <badlop@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -29,9 +29,10 @@
 -behaviour(gen_mod).
 
 -include("logger.hrl").
+-include("translate.hrl").
 
 -export([start/2, stop/1, reload/3, mod_options/1,
-	 get_commands_spec/0, depends/2]).
+	 get_commands_spec/0, depends/2, mod_doc/0]).
 
 % Commands API
 -export([
@@ -1480,20 +1481,26 @@ srg_user_del(User, Host, Group, GroupHost) ->
 %% @doc Send a message to a Jabber account.
 %% @spec (Type::binary(), From::binary(), To::binary(), Subject::binary(), Body::binary()) -> ok
 send_message(Type, From, To, Subject, Body) ->
-    FromJID = jid:decode(From),
-    ToJID = jid:decode(To),
-    Packet = build_packet(Type, Subject, Body, FromJID, ToJID),
-    State1 = #{jid => FromJID},
-    ejabberd_hooks:run_fold(user_send_packet, FromJID#jid.lserver, {Packet, State1}, []),
-    ejabberd_router:route(xmpp:set_from_to(Packet, FromJID, ToJID)).
-
-build_packet(Type, Subject, Body, FromJID, ToJID) ->
-    #message{type = misc:binary_to_atom(Type),
-	     body = xmpp:mk_text(Body),
-	     from = FromJID,
-	     to = ToJID,
-	     id = p1_rand:get_string(),
-	     subject = xmpp:mk_text(Subject)}.
+    CodecOpts = ejabberd_config:codec_options(),
+    try xmpp:decode(
+          #xmlel{name = <<"message">>,
+                 attrs = [{<<"to">>, To},
+                          {<<"from">>, From},
+                          {<<"type">>, Type},
+                          {<<"id">>, p1_rand:get_string()}],
+                 children =
+                     [#xmlel{name = <<"subject">>,
+                             children = [{xmlcdata, Subject}]},
+                      #xmlel{name = <<"body">>,
+                             children = [{xmlcdata, Body}]}]},
+          ?NS_CLIENT, CodecOpts) of
+        #message{from = JID} = Msg ->
+            State = #{jid => JID},
+            ejabberd_hooks:run_fold(user_send_packet, JID#jid.lserver, {Msg, State}, []),
+            ejabberd_router:route(Msg)
+    catch _:{xmpp_codec, Why} ->
+            {error, xmpp:format_error(Why)}
+    end.
 
 send_stanza(FromString, ToString, Stanza) ->
     try
@@ -1504,13 +1511,16 @@ send_stanza(FromString, ToString, Stanza) ->
 	Pkt = xmpp:decode(El, ?NS_CLIENT, CodecOpts),
 	ejabberd_router:route(xmpp:set_from_to(Pkt, From, To))
     catch _:{xmpp_codec, Why} ->
-	    io:format("incorrect stanza: ~s~n", [xmpp:format_error(Why)]),
+	    io:format("incorrect stanza: ~ts~n", [xmpp:format_error(Why)]),
+	    {error, Why};
+	  _:{badmatch, {error, {Code, Why}}} when is_integer(Code) ->
+	    io:format("invalid xml: ~p~n", [Why]),
 	    {error, Why};
 	  _:{badmatch, {error, Why}} ->
 	    io:format("invalid xml: ~p~n", [Why]),
 	    {error, Why};
 	  _:{bad_jid, S} ->
-	    io:format("malformed JID: ~s~n", [S]),
+	    io:format("malformed JID: ~ts~n", [S]),
 	    {error, "JID malformed"}
     end.
 
@@ -1530,7 +1540,7 @@ send_stanza_c2s(Username, Host, Resource, Stanza) ->
 	    io:format("invalid xml: ~p~n", [Why]),
 	    Err;
 	  _:{xmpp_codec, Why} ->
-	    io:format("incorrect stanza: ~s~n", [xmpp:format_error(Why)]),
+	    io:format("incorrect stanza: ~ts~n", [xmpp:format_error(Why)]),
 	    {error, Why}
     end.
 
@@ -1583,3 +1593,59 @@ num_prio(_) ->
     -1.
 
 mod_options(_) -> [].
+
+mod_doc() ->
+    #{desc =>
+          [?T("This module provides additional administrative commands."), "",
+           ?T("Details for some commands:"), "",
+           ?T("- 'ban-acount':"),
+           ?T("This command kicks all the connected sessions of the
+           account from the server. It also changes their password to
+           a randomly generated one, so they can't login anymore
+           unless a server administrator changes their password
+           again. It is possible to define the reason of the ban. The
+           new password also includes the reason and the date and time
+           of the ban. For example, if this command is called:
+           'ejabberdctl vhost example.org ban-account boby \"Spammed
+           rooms\"', then the sessions of the local account which JID
+           is boby@example.org will be kicked, and its password will
+           be set to something like this:
+           'BANNED_ACCOUNT--20080425T21:45:07--2176635--Spammed_rooms'"),
+           ?T("- 'pushroster' (and 'pushroster-all'):"),
+           ?T("The roster file must be placed, if using Windows, on
+           the directory where you installed ejabberd: C:/Program
+           Files/ejabberd or similar. If you use other Operating
+           System, place the file on the same directory where the
+           .beam files are installed. See below an example roster
+           file."),
+           ?T("- 'srg-create':"),
+           ?T("If you want to put a group Name with blankspaces, use
+           the characters \"\' and \\'\" to define when the Name
+           starts and ends. For example: 'ejabberdctl srg-create g1
+           example.org \"\'Group number 1\\'\" this_is_g1 g1'")],
+      opts =>
+          [{module_resource,
+            #{value => ?T("Resource"),
+              desc =>
+                  ?T("Indicate the resource that the XMPP stanzas must
+                  use in the FROM or TO JIDs. This is only useful in
+                  the 'get_vcard*' and 'set_vcard*' commands. The
+                  default value is 'mod_admin_extra'.")}}],
+      example =>
+	  [{?T("With this configuration, vCards can only be modified
+	    with mod_admin_extra commands:"),
+	    ["acl:",
+	     "  adminextraresource:",
+	     "    - resource: \"modadminextraf8x,31ad\"",
+	     "access_rules:",
+	     "  vcard_set:",
+	     "    - allow: adminextraresource",
+	     "modules:",
+	     "  mod_admin_extra:",
+	     "    module_resource: \"modadminextraf8x,31ad\"",
+	     "  mod_vcard:",
+	     "    access_set: vcard_set"]},
+	   {?T("Content of roster file for 'pushroster' command:"),
+	    ["[{<<\"bob\">>, <<\"example.org\">>, <<\"workers\">>, <<\"Bob\">>},",
+	     "{<<\"mart\">>, <<\"example.org\">>, <<\"workers\">>, <<\"Mart\">>},",
+	     "{<<\"Rich\">>, <<\"example.org\">>, <<\"bosses\">>, <<\"Rich\">>}]."]}]}.

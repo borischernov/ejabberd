@@ -5,7 +5,7 @@
 %%% Created : 8 Sep 2007 by Badlop <badlop@ono.com>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -28,7 +28,7 @@
 
 -behaviour(gen_mod).
 
--export([start/2, stop/1, reload/3, depends/2,
+-export([start/2, stop/1, reload/3, depends/2, mod_doc/0,
 	 muc_online_rooms/1, muc_online_rooms_by_regex/2,
 	 muc_register_nick/3, muc_unregister_nick/2,
 	 create_room_with_opts/4, create_room/3, destroy_room/2,
@@ -458,13 +458,14 @@ web_page_main(_, #request{path=[<<"muc">>], lang = Lang} = _Request) ->
 			  fun(Host, Acc) ->
 				  Acc + mod_muc:count_online_rooms(Host)
 			  end, 0, find_hosts(global)),
-    Res = [?XCT(<<"h1">>, ?T("Multi-User Chat")),
-	   ?XCT(<<"h3">>, ?T("Statistics")),
+    PageTitle = translate:translate(Lang, ?T("Multi-User Chat")),
+    Res = ?H1GL(PageTitle, <<"mod-muc">>, <<"mod_muc">>) ++
+	  [?XCT(<<"h3">>, ?T("Statistics")),
 	   ?XAE(<<"table">>, [],
 		[?XE(<<"tbody">>, [?TDTD(?T("Total rooms"), OnlineRoomsNumber)
 				  ])
 		]),
-	   ?XE(<<"ul">>, [?LI([?ACT(<<"rooms">>, ?T("List of rooms"))])])
+	   ?XE(<<"ul">>, [?LI([?ACT(<<"rooms/">>, ?T("List of rooms"))])])
 	  ],
     {stop, Res};
 
@@ -531,8 +532,9 @@ make_rooms_page(Host, Lang, {Sort_direction, Sort_column}) ->
 	  end,
 	  1,
 	  Titles),
-    [?XCT(<<"h1">>, ?T("Multi-User Chat")),
-     ?XCT(<<"h2">>, ?T("Chatrooms")),
+    PageTitle = translate:translate(Lang, ?T("Multi-User Chat")),
+    ?H1GL(PageTitle, <<"mod-muc">>, <<"mod_muc">>) ++
+    [?XCT(<<"h2">>, ?T("Chatrooms")),
      ?XE(<<"table">>,
 	 [?XE(<<"thead">>,
 	      [?XE(<<"tr">>, Titles_TR)]
@@ -623,10 +625,7 @@ justcreated_to_binary(J) when is_atom(J) ->
 %%       ok | error
 %% @doc Create a room immediately with the default options.
 create_room(Name1, Host1, ServerHost) ->
-    case create_room_with_opts(Name1, Host1, ServerHost, []) of
-        ok -> change_room_option(Name1, Host1, <<"persistent">>, <<"true">>);
-        Error -> Error
-    end.
+    create_room_with_opts(Name1, Host1, ServerHost, []).
 
 create_room_with_opts(Name1, Host1, ServerHost, CustomRoomOpts) ->
     true = (error /= (Name = jid:nodeprep(Name1))),
@@ -641,7 +640,12 @@ create_room_with_opts(Name1, Host1, ServerHost, CustomRoomOpts) ->
                                lists:keysort(1, DefRoomOpts)),
 
     %% Store the room on the server, it is not started yet though at this point
-    mod_muc:store_room(ServerHost, Host, Name, RoomOpts),
+    case lists:keyfind(persistent, 1, RoomOpts) of
+	{persistent, true} ->
+	    mod_muc:store_room(ServerHost, Host, Name, RoomOpts);
+	_ ->
+	    ok
+    end,
 
     %% Get all remaining mod_muc parameters that might be utilized
     Access = mod_muc_opt:access(ServerHost),
@@ -675,7 +679,7 @@ create_room_with_opts(Name1, Host1, ServerHost, CustomRoomOpts) ->
 %% Create the room only in the database.
 %% It is required to restart the MUC service for the room to appear.
 muc_create_room(ServerHost, {Name, Host, _}, DefRoomOpts) ->
-    io:format("Creating room ~s@~s~n", [Name, Host]),
+    io:format("Creating room ~ts@~ts~n", [Name, Host]),
     mod_muc:store_room(ServerHost, Host, Name, DefRoomOpts).
 
 %% @spec (Name::binary(), Host::binary()) ->
@@ -692,7 +696,7 @@ destroy_room(Name, Service) ->
     end.
 
 destroy_room({N, H, SH}) ->
-    io:format("Destroying room: ~s@~s - vhost: ~s~n", [N, H, SH]),
+    io:format("Destroying room: ~ts@~ts - vhost: ~ts~n", [N, H, SH]),
     destroy_room(N, H).
 
 
@@ -724,7 +728,7 @@ read_room(F) ->
     case io:get_line(F, "") of
 	eof -> eof;
 	String ->
-	    case io_lib:fread("~s", String) of
+	    case io_lib:fread("~ts", String) of
 		{ok, [RoomJID], _} -> split_roomjid(list_to_binary(RoomJID));
 		{error, What} ->
 		    io:format("Parse error: what: ~p~non the line: ~p~n~n", [What, String])
@@ -776,7 +780,7 @@ rooms_empty_destroy(Service) ->
 
 rooms_report(Method, Action, Service, Days) ->
     {NA, NP, RP} = muc_unused(Method, Action, Service, Days),
-    io:format("rooms ~s: ~p out of ~p~n", [Method, NP, NA]),
+    io:format("rooms ~ts: ~p out of ~p~n", [Method, NP, NA]),
     [<<R/binary, "@", H/binary>> || {R, H, _SH, _P} <- RP].
 
 muc_unused(Method, Action, Service, Last_allowed) ->
@@ -801,7 +805,7 @@ get_rooms(ServiceArg) ->
     Hosts = find_services(ServiceArg),
     lists:flatmap(
       fun(Host) ->
-	      [{RoomName, RoomHost, Host, Pid}
+	      [{RoomName, RoomHost, ejabberd_router:host_of_route(Host), Pid}
 	       || {RoomName, RoomHost, Pid} <- mod_muc:get_online_rooms(Host)]
       end, Hosts).
 
@@ -1313,3 +1317,10 @@ find_hosts(ServerHost) ->
     end.
 
 mod_options(_) -> [].
+
+mod_doc() ->
+    #{desc =>
+	  [?T("This module provides commands to administer local MUC "
+	      "services and their MUC rooms. It also provides simple "
+	      "WebAdmin pages to view the existing rooms."), "",
+	   ?T("This module depends on 'mod_muc'.")]}.

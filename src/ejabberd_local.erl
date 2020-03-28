@@ -5,7 +5,7 @@
 %%% Created : 30 Nov 2002 by Alexey Shchepin <alexey@process-one.net>
 %%%
 %%%
-%%% ejabberd, Copyright (C) 2002-2019   ProcessOne
+%%% ejabberd, Copyright (C) 2002-2020   ProcessOne
 %%%
 %%% This program is free software; you can redistribute it and/or
 %%% modify it under the terms of the GNU General Public License as
@@ -71,7 +71,7 @@ start_link() ->
 
 -spec route(stanza()) -> ok.
 route(Packet) ->
-    ?DEBUG("Local route:~n~s", [xmpp:pp(Packet)]),
+    ?DEBUG("Local route:~n~ts", [xmpp:pp(Packet)]),
     Type = xmpp:get_type(Packet),
     To = xmpp:get_to(Packet),
     if To#jid.luser /= <<"">> ->
